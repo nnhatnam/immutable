@@ -15,17 +15,26 @@ func panics(f func()) (b bool) {
 	return false
 }
 
+var setTests = []struct {
+	s    []int
+	i    int
+	v    int
+	want []int
+}{
+	{[]int{1, 2, 3}, 0, 4, []int{4, 2, 3}},
+	{[]int{1, 2, 3}, 1, 4, []int{1, 4, 3}},
+	{[]int{1, 2, 3}, 2, 4, []int{1, 2, 4}},
+
+	{[]int{1}, 0, 4, []int{4}},
+}
+
 func TestSet(t *testing.T) {
 
-	s := []int{1, 2, 3}
-	s2 := Set(s, 1, 4)
-
-	if s2[1] != 4 {
-		t.Errorf("s2 is not modified, expected %v but got %v", 4, s2[1])
-	}
-
-	if s[1] != 2 {
-		t.Errorf("s is modified, expected %v but got %v", 2, s[1])
+	for _, test := range setTests {
+		got := Set(test.s, test.i, test.v)
+		if !slices.Equal(got, test.want) {
+			t.Errorf("Set(%v, %d, %d) = %v, want %v", test.s, test.i, test.v, got, test.want)
+		}
 	}
 
 	//panics tests
@@ -36,10 +45,100 @@ func TestSet(t *testing.T) {
 		v    int
 	}{
 		{"with negative index", []int{42}, -1, 10},
-		{"with out-of-bounds index", []int{42}, 2, 10},
+		{"with out-of-bounds index", []int{42}, 1, 10},
+		{"with nil slice", nil, 0, 10},
 	} {
 		if !panics(func() { Set(test.s, test.i, test.v) }) {
 			t.Errorf("Delete %s: got no panic, want panic", test.name)
+		}
+	}
+
+}
+
+var overrideTests = []struct {
+	s    []int
+	i    int
+	v    []int
+	want []int
+}{
+	{[]int{1, 2, 3}, 0, []int{4, 5, 6}, []int{4, 5, 6}},
+	{[]int{1, 2, 3}, 1, []int{4, 5, 6}, []int{1, 4, 5, 6}},
+	{[]int{1, 2, 3}, 2, []int{4, 5, 6}, []int{1, 2, 4, 5, 6}},
+	{[]int{1, 2, 3}, 3, []int{4, 5, 6}, []int{1, 2, 3, 4, 5, 6}},
+	{[]int{1, 2, 3}, 0, []int{}, []int{1, 2, 3}},
+	{[]int{1, 2, 3}, 1, []int{}, []int{1, 2, 3}},
+	{[]int{1, 2, 3}, 2, []int{}, []int{1, 2, 3}},
+	{[]int{1, 2, 3}, 3, []int{}, []int{1, 2, 3}},
+	{[]int{1, 2, 3}, 0, []int{4}, []int{4, 2, 3}},
+	{[]int{1, 2, 3}, 1, []int{4}, []int{1, 4, 3}},
+	{[]int{1, 2, 3}, 2, []int{4}, []int{1, 2, 4}},
+	{[]int{1, 2, 3}, 3, []int{4}, []int{1, 2, 3, 4}},
+	{[]int{1, 2, 3}, 0, []int{4, 5}, []int{4, 5, 3}},
+	{[]int{1, 2, 3}, 1, []int{4, 5}, []int{1, 4, 5}},
+	{[]int{1, 2, 3}, 2, []int{4, 5}, []int{1, 2, 4, 5}},
+}
+
+func TestOverride(t *testing.T) {
+
+	for _, test := range overrideTests {
+		got := Override(test.s, test.i, test.v...)
+		if !slices.Equal(got, test.want) {
+			t.Errorf("SetOverride(%v, %v, %v) = %v, want %v", test.s, test.i, test.v, got, test.want)
+		}
+	}
+
+	//panics tests
+	for _, test := range []struct {
+		name string
+		s    []int
+		i    int
+		v    []int
+	}{
+		{"with negative index", []int{42}, -1, []int{10}},
+		{"with out-of-bounds index", []int{42}, 2, []int{10}},
+	} {
+
+		if !panics(func() { Override(test.s, test.i, test.v...) }) {
+			t.Errorf("Override %s: got no panic, want panic", test.name)
+		}
+	}
+}
+
+var updateTests = []struct {
+	s    []int
+	i    int
+	f    func(int) int
+	want []int
+}{
+	{[]int{1, 2, 3}, 0, func(i int) int { return i + 1 }, []int{2, 2, 3}},
+	{[]int{1, 2, 3}, 1, func(i int) int { return i + 1 }, []int{1, 3, 3}},
+	{[]int{1, 2, 3}, 2, func(i int) int { return i + 1 }, []int{1, 2, 4}},
+	{[]int{1, 2, 3}, 0, nil, []int{1, 2, 3}},
+	{[]int{}, 1, nil, []int{}},
+	{nil, 1, nil, []int{}},
+}
+
+func TestUpdate(t *testing.T) {
+
+	for _, test := range updateTests {
+		got := Update(test.s, test.i, test.f)
+		if !slices.Equal(got, test.want) {
+			t.Errorf("Update(%v, %v) = %v, want %v", test.s, test.i, got, test.want)
+		}
+	}
+
+	//panics tests
+	for _, test := range []struct {
+		name string
+		s    []int
+		i    int
+		f    func(int) int
+	}{
+		{"with negative index", []int{42}, -1, func(i int) int { return i + 1 }},
+		{"with out-of-bounds index", []int{1, 2, 3}, 3, func(i int) int { return i + 1 }},
+	} {
+		if !panics(func() { Update(test.s, test.i, test.f) }) {
+			t.Errorf("Update %s: got no panic, want panic", test.name)
 		}
 	}
 
@@ -109,6 +208,54 @@ func TestInsert(t *testing.T) {
 
 var removeTests = []struct {
 	s    []int
+	v    int
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		1,
+		[]int{2, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		2,
+		[]int{1, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		3,
+		[]int{1, 2},
+	},
+	{
+		[]int{1, 2, 3},
+		4,
+		[]int{1, 2, 3},
+	},
+	{
+		[]int{},
+		1,
+		[]int{},
+	},
+	{
+		nil,
+		1,
+		[]int{},
+	},
+}
+
+func TestRemove(t *testing.T) {
+
+	for _, test := range removeTests {
+		original := slices.Clone(test.s)
+		if got := Remove(test.s, test.v); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) {
+			t.Errorf("Remove(%v, %v) = %v, want %v", test.s, test.v, got, test.want)
+		}
+	}
+	
+}
+
+var removeAtTests = []struct {
+	s    []int
 	i    int
 	want []int
 }{
@@ -129,11 +276,11 @@ var removeTests = []struct {
 	},
 }
 
-func TestRemove(t *testing.T) {
+func TestRemoveAt(t *testing.T) {
 
-	for _, test := range removeTests {
+	for _, test := range removeAtTests {
 		original := slices.Clone(test.s)
-		if got := Remove(test.s, test.i); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) {
+		if got := RemoveAt(test.s, test.i); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) {
 			t.Errorf("Remove(%v, %d) = %v, want %v", test.s, test.i, got, test.want)
 		}
 	}
@@ -147,7 +294,7 @@ func TestRemove(t *testing.T) {
 		{"with negative index", []int{42}, -1},
 		{"with out-of-bounds index", []int{42}, 2},
 	} {
-		if !panics(func() { Remove(test.s, test.i) }) {
+		if !panics(func() { RemoveAt(test.s, test.i) }) {
 			t.Errorf("Remove %s: got no panic, want panic", test.name)
 		}
 	}
@@ -538,4 +685,235 @@ func TestShiftRight(t *testing.T) {
 		}
 	}
 
+}
+
+var rotateLeftTests = []struct {
+	s    []int
+	j    int //rotate left by j
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		1,
+		[]int{2, 3, 1},
+	},
+	{
+		[]int{1, 2, 3},
+		2,
+		[]int{3, 1, 2},
+	},
+	{
+		[]int{1, 2, 3},
+		3,
+		[]int{1, 2, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		4,
+		[]int{2, 3, 1},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		5,
+		[]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		10,
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		20,
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+	},
+	{
+		[]int{},
+		1,
+		[]int{},
+	},
+}
+
+func TestRotateLeft(t *testing.T) {
+
+	for _, test := range rotateLeftTests {
+		original := slices.Clone(test.s)
+		if got := RotateLeft(test.s, test.j); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) || cap(got) > len(got) {
+			t.Errorf("RotateLeft(%v, %v) = %v (cap %v - len %v), want %v", test.s, test.j, got, cap(got), len(got), test.want)
+		}
+	}
+
+	//panics tests
+	for _, test := range []struct {
+		name string
+		s    []int
+		j    int
+	}{
+		{"with negative index", []int{1, 2, 3, 4, 5}, -1},
+	} {
+		if !panics(func() { RotateLeft(test.s, test.j) }) {
+			t.Errorf("RotateLeft %s: got no panic, want panic", test.name)
+		}
+	}
+}
+
+var rotateRightTests = []struct {
+	s    []int
+	j    int //rotate right by j
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		1,
+		[]int{3, 1, 2},
+	},
+	{
+		[]int{1, 2, 3},
+		2,
+		[]int{2, 3, 1},
+	},
+	{
+		[]int{1, 2, 3},
+		3,
+		[]int{1, 2, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		4,
+		[]int{3, 1, 2},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		5,
+		[]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		10,
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		20,
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+	},
+	{
+		[]int{},
+		1,
+		[]int{},
+	},
+}
+
+func TestRotateRight(t *testing.T) {
+
+	for _, test := range rotateRightTests {
+		original := slices.Clone(test.s)
+		if got := RotateRight(test.s, test.j); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) || cap(got) > len(got) {
+			t.Errorf("RotateRight(%v, %v) = %v (cap %v - len %v), want %v", test.s, test.j, got, cap(got), len(got), test.want)
+		}
+	}
+
+	//panics tests
+	for _, test := range []struct {
+		name string
+		s    []int
+		j    int
+	}{
+		{"with negative index", []int{1, 2, 3, 4, 5}, -1},
+	} {
+		if !panics(func() { RotateRight(test.s, test.j) }) {
+			t.Errorf("RotateRight %s: got no panic, want panic", test.name)
+		}
+	}
+}
+
+var reverseTests = []struct {
+	s    []int
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		[]int{3, 2, 1},
+	},
+	{
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		[]int{10, 9, 8, 7, 6, 5, 4, 3, 2, 1},
+	},
+	{
+		[]int{},
+		[]int{},
+	},
+	{
+		[]int{1},
+		[]int{1},
+	},
+	{
+		[]int{1, 1},
+		[]int{1, 1},
+	},
+	{
+		nil,
+		[]int{},
+	},
+}
+
+func TestReverse(t *testing.T) {
+
+	for _, test := range reverseTests {
+		original := slices.Clone(test.s)
+		if got := Reverse(test.s); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) || cap(got) > len(got) {
+			t.Errorf("Reverse(%v) = %v (cap %v - len %v), want %v", test.s, got, cap(got), len(got), test.want)
+		}
+	}
+}
+
+var concatTests = []struct {
+	s1   []int
+	s2   []int
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		[]int{4, 5, 6},
+		[]int{1, 2, 3, 4, 5, 6},
+	},
+	{
+		[]int{1, 2, 3},
+		[]int{},
+		[]int{1, 2, 3},
+	},
+	{
+		[]int{},
+		[]int{4, 5, 6},
+		[]int{4, 5, 6},
+	},
+	{
+		[]int{},
+		[]int{},
+		[]int{},
+	},
+	{
+		nil,
+		[]int{4, 5, 6},
+		[]int{4, 5, 6},
+	},
+	{
+		[]int{1, 2, 3},
+		nil,
+		[]int{1, 2, 3},
+	},
+	{
+		nil,
+		nil,
+		[]int{},
+	},
+}
+
+func TestConcat(t *testing.T) {
+
+	for _, test := range concatTests {
+		if got := Concat(test.s1, test.s2); !slices.Equal(got, test.want) || cap(got) > len(got) {
+			t.Errorf("Concat(%v, %v) = %v (cap %v - len %v), want %v", test.s1, test.s2, got, cap(got), len(got), test.want)
+		}
+	}
 }
