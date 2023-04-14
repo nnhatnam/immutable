@@ -2,6 +2,8 @@ package immutable
 
 import (
 	"golang.org/x/exp/slices"
+	"math"
+	"strconv"
 	"testing"
 )
 
@@ -53,18 +55,32 @@ func TestSet(t *testing.T) {
 		}
 	}
 
+	// Test number of allocations
+	for _, test := range setTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Set(test.s, test.i, test.v)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("Set(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("Set(%v) allocates %v times, want 0", test.s, allocs)
+		}
+
+	}
+
 }
 
-var overrideTests = []struct {
+var copyTests = []struct {
 	s    []int
 	i    int
 	v    []int
 	want []int
 }{
 	{[]int{1, 2, 3}, 0, []int{4, 5, 6}, []int{4, 5, 6}},
-	{[]int{1, 2, 3}, 1, []int{4, 5, 6}, []int{1, 4, 5, 6}},
-	{[]int{1, 2, 3}, 2, []int{4, 5, 6}, []int{1, 2, 4, 5, 6}},
-	{[]int{1, 2, 3}, 3, []int{4, 5, 6}, []int{1, 2, 3, 4, 5, 6}},
+	{[]int{1, 2, 3}, 1, []int{4, 5, 6}, []int{1, 4, 5}},
+	{[]int{1, 2, 3}, 2, []int{4, 5, 6}, []int{1, 2, 4}},
+	{[]int{1, 2, 3}, 3, []int{4, 5, 6}, []int{1, 2, 3}},
 	{[]int{1, 2, 3}, 0, []int{}, []int{1, 2, 3}},
 	{[]int{1, 2, 3}, 1, []int{}, []int{1, 2, 3}},
 	{[]int{1, 2, 3}, 2, []int{}, []int{1, 2, 3}},
@@ -72,18 +88,19 @@ var overrideTests = []struct {
 	{[]int{1, 2, 3}, 0, []int{4}, []int{4, 2, 3}},
 	{[]int{1, 2, 3}, 1, []int{4}, []int{1, 4, 3}},
 	{[]int{1, 2, 3}, 2, []int{4}, []int{1, 2, 4}},
-	{[]int{1, 2, 3}, 3, []int{4}, []int{1, 2, 3, 4}},
+	{[]int{1, 2, 3}, 3, []int{4}, []int{1, 2, 3}},
 	{[]int{1, 2, 3}, 0, []int{4, 5}, []int{4, 5, 3}},
 	{[]int{1, 2, 3}, 1, []int{4, 5}, []int{1, 4, 5}},
-	{[]int{1, 2, 3}, 2, []int{4, 5}, []int{1, 2, 4, 5}},
+	{[]int{1, 2, 3}, 2, []int{4, 5}, []int{1, 2, 4}},
+	{[]int{1}, 0, []int{4, 5, 6}, []int{4}},
 }
 
-func TestOverride(t *testing.T) {
+func TestCopy(t *testing.T) {
 
-	for _, test := range overrideTests {
-		got := Override(test.s, test.i, test.v...)
+	for _, test := range copyTests {
+		got := Copy(test.s, test.v, test.i)
 		if !slices.Equal(got, test.want) {
-			t.Errorf("SetOverride(%v, %v, %v) = %v, want %v", test.s, test.i, test.v, got, test.want)
+			t.Errorf("Copy(%v, %v, %v) = %v, want %v", test.s, test.i, test.v, got, test.want)
 		}
 	}
 
@@ -98,9 +115,23 @@ func TestOverride(t *testing.T) {
 		{"with out-of-bounds index", []int{42}, 2, []int{10}},
 	} {
 
-		if !panics(func() { Override(test.s, test.i, test.v...) }) {
+		if !panics(func() { Copy(test.s, test.v, test.i) }) {
 			t.Errorf("Override %s: got no panic, want panic", test.name)
 		}
+	}
+
+	// Test number of allocations
+	for _, test := range copyTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Copy(test.s, test.v, test.i)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("Copy(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("Copy(%v) allocates %v times, want 0", test.s, allocs)
+		}
+
 	}
 }
 
@@ -139,6 +170,19 @@ func TestUpdate(t *testing.T) {
 	} {
 		if !panics(func() { Update(test.s, test.i, test.f) }) {
 			t.Errorf("Update %s: got no panic, want panic", test.name)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range updateTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Update(test.s, test.i, test.f)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("Update(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("Update(%v) allocates %v times, want 0", test.s, allocs)
 		}
 	}
 
@@ -204,6 +248,20 @@ func TestInsert(t *testing.T) {
 			t.Errorf("Insert %s: got no panic, want panic", test.name)
 		}
 	}
+
+	// Test number of allocations
+	for _, test := range insertTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Insert(test.s, test.i, test.add...)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("Insert(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("Insert(%v) allocates %v times, want 0", test.s, allocs)
+		}
+
+	}
 }
 
 var removeTests = []struct {
@@ -251,7 +309,18 @@ func TestRemove(t *testing.T) {
 			t.Errorf("Remove(%v, %v) = %v, want %v", test.s, test.v, got, test.want)
 		}
 	}
-	
+
+	// Test number of allocations
+	for _, test := range removeTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Remove(test.s, test.v)
+		})
+		if allocs > 1 {
+			t.Errorf("Remove(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+	}
+
 }
 
 var removeAtTests = []struct {
@@ -296,6 +365,17 @@ func TestRemoveAt(t *testing.T) {
 	} {
 		if !panics(func() { RemoveAt(test.s, test.i) }) {
 			t.Errorf("Remove %s: got no panic, want panic", test.name)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range removeAtTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = RemoveAt(test.s, test.i)
+		})
+		if allocs > 1 {
+			t.Errorf("RemoveAt(%v) allocates %v times, want <= 1", test.s, allocs)
 		}
 	}
 
@@ -371,6 +451,18 @@ func TestRemoveRange(t *testing.T) {
 		}
 	}
 
+	// Test number of allocations
+	for _, test := range removeRangeTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = RemoveRange(test.s, test.i, test.j)
+		})
+		if allocs > 1 {
+			t.Errorf("RemoveRange(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+
+	}
+
 }
 
 var pushTests = []struct {
@@ -414,7 +506,17 @@ func TestPush(t *testing.T) {
 		}
 	}
 
-	//panics tests are not needed, because Push is just a wrapper around Insert
+	// Test number of allocations
+	for _, test := range pushTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = Push(test.s, test.add...)
+		})
+		if allocs > 1 {
+			t.Errorf("Push(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+
+	}
 
 }
 
@@ -460,7 +562,17 @@ func TestPushFront(t *testing.T) {
 		}
 	}
 
-	//panics tests are not needed, because PushFront is just a wrapper around Insert
+	// Test number of allocations
+	for _, test := range pushFrontTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = PushFront(test.s, test.add...)
+		})
+		if allocs > 1 {
+			t.Errorf("PushFront(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+
+	}
 
 }
 
@@ -500,7 +612,16 @@ func TestPop(t *testing.T) {
 		}
 	}
 
-	//panics tests are not needed, because Pop is just a wrapper around Remove
+	// Test number of allocations
+	for _, test := range popTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_, _ = Pop(test.s)
+		})
+		if allocs > 1 {
+			t.Errorf("Pop(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+	}
 
 }
 
@@ -540,7 +661,16 @@ func TestPopFront(t *testing.T) {
 		}
 	}
 
-	//panics tests are not needed, because PopFront is just a wrapper around Remove
+	// Test number of allocations
+	for _, test := range popFrontTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_, _ = PopFront(test.s)
+		})
+		if allocs > 1 {
+			t.Errorf("PopFront(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+	}
 
 }
 
@@ -610,6 +740,17 @@ func TestShiftLeft(t *testing.T) {
 	} {
 		if !panics(func() { ShiftLeft(test.s, test.j) }) {
 			t.Errorf("ShiftLeft %s: got no panic, want panic", test.name)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range shilftLeftTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = ShiftLeft(test.s, test.j)
+		})
+		if allocs > 1 {
+			t.Errorf("ShiftLeft(%v, %v) allocates %v times, want <= 1", test.s, test.j, allocs)
 		}
 	}
 
@@ -685,6 +826,17 @@ func TestShiftRight(t *testing.T) {
 		}
 	}
 
+	// Test number of allocations
+	for _, test := range shilftRightTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = ShiftRight(test.s, test.j)
+		})
+		if allocs > 1 {
+			t.Errorf("ShiftRight(%v, %v) allocates %v times, want <= 1", test.s, test.j, allocs)
+		}
+	}
+
 }
 
 var rotateLeftTests = []struct {
@@ -753,6 +905,17 @@ func TestRotateLeft(t *testing.T) {
 	} {
 		if !panics(func() { RotateLeft(test.s, test.j) }) {
 			t.Errorf("RotateLeft %s: got no panic, want panic", test.name)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range rotateLeftTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = RotateLeft(test.s, test.j)
+		})
+		if allocs > 1 {
+			t.Errorf("RotateLeft(%v, %v) allocates %v times, want <= 1", test.s, test.j, allocs)
 		}
 	}
 }
@@ -825,6 +988,20 @@ func TestRotateRight(t *testing.T) {
 			t.Errorf("RotateRight %s: got no panic, want panic", test.name)
 		}
 	}
+
+	// Test number of allocations
+	for _, test := range rotateRightTests {
+
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = RotateRight(test.s, test.j)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("RotateRight(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("RotateRight(%v) allocates %v times, want 0", test.s, allocs)
+		}
+
+	}
 }
 
 var reverseTests = []struct {
@@ -863,6 +1040,18 @@ func TestReverse(t *testing.T) {
 		original := slices.Clone(test.s)
 		if got := Reverse(test.s); !slices.Equal(got, test.want) || !slices.Equal(test.s, original) || cap(got) > len(got) {
 			t.Errorf("Reverse(%v) = %v (cap %v - len %v), want %v", test.s, got, cap(got), len(got), test.want)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range reverseTests {
+		allocs := testing.AllocsPerRun(1000, func() {
+			Reverse(test.s)
+		})
+		if len(test.s) > 0 && allocs != 1 {
+			t.Errorf("Reverse(%v) allocates %v times, want 1", test.s, allocs)
+		} else if len(test.s) == 0 && allocs != 0 {
+			t.Errorf("Reverse(%v) allocates %v times, want 0", test.s, allocs)
 		}
 	}
 }
@@ -912,8 +1101,461 @@ var concatTests = []struct {
 func TestConcat(t *testing.T) {
 
 	for _, test := range concatTests {
-		if got := Concat(test.s1, test.s2); !slices.Equal(got, test.want) || cap(got) > len(got) {
+		original1 := slices.Clone(test.s1)
+		original2 := slices.Clone(test.s2)
+		if got := Concat(test.s1, test.s2); !slices.Equal(got, test.want) || !slices.Equal(original1, test.s1) || !slices.Equal(original2, test.s2) || cap(got) > len(got) {
 			t.Errorf("Concat(%v, %v) = %v (cap %v - len %v), want %v", test.s1, test.s2, got, cap(got), len(got), test.want)
 		}
 	}
+
+	// Test number of allocations
+	for _, test := range concatTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			Concat(test.s1, test.s2)
+		})
+		if allocs > 1 {
+			t.Errorf("Concat(%v, %v) allocates %v times, want <= 1", test.s1, test.s2, allocs)
+		}
+
+	}
+}
+
+var concatAllTests = []struct {
+	s    [][]int
+	want []int
+}{
+	{
+		[][]int{
+
+			[]int{1, 2, 3},
+			[]int{4, 5, 6},
+			[]int{7, 8, 9},
+		},
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9},
+	},
+	{
+		[][]int{
+			[]int{1, 2, 3},
+			[]int{},
+			[]int{7, 8, 9},
+		},
+		[]int{1, 2, 3, 7, 8, 9},
+	},
+	{
+		[][]int{
+			[]int{1, 2, 3},
+			[]int{4, 5, 6},
+			[]int{},
+		},
+		[]int{1, 2, 3, 4, 5, 6},
+	},
+	{
+		[][]int{
+			[]int{},
+			[]int{},
+			[]int{},
+		},
+		[]int{},
+	},
+	{
+		[][]int{
+			[]int{1, 2, 3},
+			[]int{4, 5, 6},
+			[]int{7, 8, 9},
+			[]int{10, 11, 12},
+			[]int{13, 14, 15},
+			nil,
+			[]int{16, 17, 18},
+			nil,
+			[]int{19, 20, 21},
+		},
+		[]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21},
+	},
+	{
+		[][]int{
+			nil,
+			nil,
+			nil,
+		},
+		[]int{},
+	},
+}
+
+func TestConcatAll(t *testing.T) {
+
+	for _, test := range concatAllTests {
+		if got := ConcatAll(test.s...); !slices.Equal(got, test.want) || cap(got) > len(got) {
+			t.Errorf("ConcatAll(%v) = %v (cap %v - len %v), want %v", test.s, got, cap(got), len(got), test.want)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range concatAllTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			ConcatAll(test.s...)
+		})
+		if allocs > 1 {
+			t.Errorf("ConcatAll(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+
+	}
+}
+
+var repeatTests = []struct {
+	s    []int
+	n    int
+	want []int
+}{
+	{
+		[]int{1, 2, 3},
+		3,
+		[]int{1, 2, 3, 1, 2, 3, 1, 2, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		0,
+		[]int{},
+	},
+	{
+		[]int{1, 2, 3},
+		1,
+		[]int{1, 2, 3},
+	},
+	{
+		[]int{1, 2, 3},
+		-1,
+		[]int{},
+	},
+	{
+		[]int{},
+		3,
+		[]int{},
+	},
+	{
+		nil,
+		3,
+		[]int{},
+	},
+}
+
+func TestRepeat(t *testing.T) {
+
+	for _, test := range repeatTests {
+		original := slices.Clone(test.s)
+		if got := Repeat(test.s, test.n); !slices.Equal(got, test.want) || !slices.Equal(original, test.s) || cap(got) > len(got) {
+			t.Errorf("Repeat(%v, %v) = %v (cap %v - len %v), want %v", test.s, test.n, got, cap(got), len(got), test.want)
+		}
+	}
+
+	//panics test
+	for _, test := range []struct {
+		name string
+		s    []rune
+		n    int
+	}{
+		{"overflow length", []rune("abc"), math.MaxInt},
+	} {
+		if !panics(func() { Repeat(test.s, test.n) }) {
+			t.Errorf("Repeat(%v, %v) should panic", test.s, test.n)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range repeatTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			Repeat(test.s, test.n)
+		})
+		if allocs > 1 {
+			t.Errorf("Repeat(%v, %v) allocates %v times, want <= 1", test.s, test.n, allocs)
+		}
+
+	}
+}
+
+var mapTests = []struct {
+	s    []int
+	f    func(int, int) string
+	want []string
+}{
+	{
+		[]int{1, 2, 3},
+		func(i int, v int) string {
+			return strconv.Itoa(i)
+		},
+		[]string{"0", "1", "2"},
+	},
+	{
+		[]int{1, 2, 3},
+		func(i int, v int) string { return strconv.Itoa(i * 2) },
+		[]string{"0", "2", "4"},
+	},
+	{
+		[]int{},
+		func(i int, v int) string { return strconv.Itoa(i * 3) },
+		[]string{},
+	},
+	{
+		nil,
+		func(i int, v int) string { return strconv.Itoa(i * 3) },
+		[]string{},
+	},
+	{
+		[]int{4, 5, 6},
+		func(i int, v int) string { return strconv.Itoa(v) },
+		[]string{"4", "5", "6"},
+	},
+	{
+		[]int{1, 2, 3},
+		nil,
+		[]string{},
+	},
+	{
+		nil,
+		nil,
+		[]string{},
+	},
+}
+
+func TestMap(t *testing.T) {
+
+	for _, test := range mapTests {
+		original := slices.Clone(test.s)
+		if got := Map(test.s, test.f); !slices.Equal(got, test.want) || !slices.Equal(original, test.s) || cap(got) > len(got) {
+			t.Errorf("Map(%v) = %v (cap %v - len %v), want %v", test.s, got, cap(got), len(got), test.want)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range mapTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			Map(test.s, test.f)
+		})
+		if allocs > 1 {
+			t.Errorf("Map(%v) allocates %v times, want <= 1", test.s, allocs)
+		}
+
+	}
+}
+
+//var flatTests = []struct {
+//	s     []any
+//	depth int
+//	want  []any
+//}{
+//	{
+//		[]any{1, 2, []int{3, 4}},
+//		1,
+//		[]any{1, 2, 3, 4},
+//	},
+//	{
+//		[]any{1, 2, []any{3, 4, []int{5, 6}}},
+//		1,
+//		[]any{1, 2, 3, 4, []int{5, 6}},
+//	},
+//	{
+//		[]any{1, 2, []any{3, 4, []int{5, 6}}},
+//		2,
+//		[]any{1, 2, 3, 4, 5, 6},
+//	},
+//	{
+//		[]any{1, 2, []any{3, 4, []int{5, 6}}},
+//		3,
+//		[]any{1, 2, 3, 4, 5, 6},
+//	},
+//	{
+//		[]any{1, 2, []any{3, 4, []int{}}},
+//		2,
+//		[]any{1, 2, 3, 4},
+//	},
+//}
+//
+//func TestFlat(t *testing.T) {
+//
+//	for _, test := range flatTests {
+//		original := slices.Clone(test.s)
+//		if got := Flat(test.s, test.depth); !slices.Equal(got, test.want) || !slices.Equal(original, test.s) || cap(got) > len(got) {
+//			t.Errorf("Flat(%v, %v) = %v (cap %v - len %v), want %v", test.s, test.depth, got, cap(got), len(got), test.want)
+//		}
+//	}
+//
+//	//panics test
+//	for _, test := range []struct {
+//		name  string
+//		s     []any
+//		depth int
+//	}{
+//		{"negative depth", []any{1, 2, []any{3, 4, []int{5, 6}}}, -1},
+//	} {
+//		if !panics(func() { Flat(test.s, test.depth) }) {
+//			t.Errorf("Flat(%v, %v) should panic", test.s, test.depth)
+//		}
+//	}
+//
+//	// Test number of allocations
+//	for _, test := range flatTests {
+//
+//		allocs := testing.AllocsPerRun(1000, func() {
+//			Flat(test.s, test.depth)
+//		})
+//		if allocs > 1 {
+//			t.Logf("Flat(%v, %v) allocates %v times, want <= 1", test.s, test.depth, allocs)
+//		}
+//
+//	}
+//
+//}
+
+var filterTests = []struct {
+	s    []string
+	f    func(int, string) bool
+	want []string
+}{
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 1 },
+		[]string{"b"},
+	},
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return v == "a" },
+		[]string{"a"},
+	},
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return v == "d" },
+		[]string{},
+	},
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 3 },
+		[]string{},
+	},
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 1 || v == "c" },
+		[]string{"b", "c"},
+	},
+	{
+		[]string{},
+		func(i int, v string) bool { return i == 1 },
+		[]string{},
+	},
+	{
+		nil,
+		func(i int, v string) bool { return i == 1 },
+
+		[]string{},
+	},
+	{
+		[]string{"a", "b", "c"},
+		nil,
+		[]string{},
+	},
+	{
+		nil,
+		nil,
+		[]string{},
+	},
+	{
+		[]string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"},
+		func(i int, v string) bool { return v < "m" },
+		[]string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"},
+	},
+}
+
+func TestFilter(t *testing.T) {
+
+	for _, test := range filterTests {
+		original := slices.Clone(test.s)
+		if got := Filter(test.s, test.f); !slices.Equal(got, test.want) || !slices.Equal(original, test.s) {
+			t.Errorf("Filter(%v) = %v (cap %v - len %v), want %v", test.s, got, cap(got), len(got), test.want)
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range filterTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			Filter(test.s, test.f)
+		})
+		if allocs > 1 {
+			t.Logf("Filter(%v) allocates %v times", test.s, allocs)
+		}
+
+	}
+}
+
+var partitionTests = []struct {
+	s    []string
+	f    func(int, string) bool
+	want [][]string
+}{
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 1 },
+		[][]string{{"b"}, {"a", "c"}},
+	},
+	{
+		[]string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"},
+		func(i int, v string) bool { return v < "m" },
+		[][]string{{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"}, {"m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}},
+	},
+	// edges cases
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 3 },
+		[][]string{{}, {"a", "b", "c"}},
+	},
+	{
+		[]string{"a", "b", "c"},
+		func(i int, v string) bool { return i == 1 || v == "c" },
+		[][]string{{"b", "c"}, {"a"}},
+	},
+	{
+		[]string{},
+		func(i int, v string) bool { return i == 1 },
+		[][]string{{}, {}},
+	},
+	{
+		nil,
+		func(i int, v string) bool { return i == 1 },
+		[][]string{{}, {}},
+	},
+	{
+		[]string{"a", "b", "c"},
+		nil,
+		[][]string{{}, {}},
+	},
+	{
+		nil,
+		nil,
+		[][]string{{}, {}},
+	},
+}
+
+func TestPartition(t *testing.T) {
+
+	for _, test := range partitionTests {
+		original := slices.Clone(test.s)
+		if matched, unmatched := Partition(test.s, test.f); !slices.Equal(matched, test.want[0]) || !slices.Equal(unmatched, test.want[1]) || !slices.Equal(original, test.s) {
+			t.Errorf("Partition(%v) = (%v, %v), want (%v, %v)", test.s, matched, unmatched, test.want[0], test.want[1])
+		}
+	}
+
+	// Test number of allocations
+	for _, test := range partitionTests {
+
+		allocs := testing.AllocsPerRun(1000, func() {
+			Partition(test.s, test.f)
+		})
+		if allocs > 1 {
+			t.Logf("Partition(%v) allocates %v times", test.s, allocs)
+		}
+
+	}
+
 }

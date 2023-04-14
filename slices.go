@@ -11,16 +11,12 @@ func Set[S ~[]E, E any](s S, i int, v E) S {
 	return s2
 }
 
-// Override creates a new slice that copies the elements of `s` up to index `i`, then overrides the remaining elements with `v`.
-// If len(v) > len(s[i:]), it is essentially the same as Concat(s[:i], v).
-// If len(v) < len(s[i:]), it is essentially the same as Concat(s[:i], v, s[i+len(v):]).
-// Override panics if `i` < 0 or `i` > len(s).
-// In the returned slice, r[i] == v[0], r[i+1] == v[1], etc.
-func Override[S ~[]E, E any](s S, i int, v ...E) S {
+// Copy is smiliar to `copy` but returns a new slice instead of modifying the destination slice.
+func Copy[S ~[]E, E any](dst, src S, i int) S {
 
-	s2 := make([]E, max(len(s), len(s[:i])+len(v)))
-	copy(s2, s)
-	copy(s2[i:], v)
+	s2 := make([]E, len(dst))
+	copy(s2, dst)
+	copy(s2[i:], src)
 	return s2
 }
 
@@ -253,5 +249,159 @@ func Concat[S ~[]E, E any](s S, v S) S {
 	copy(s2, s)
 	copy(s2[len(s):], v)
 	return s2
+
+}
+
+// ConcatAll creates a new slice that is the result of concatenating all the slices in `s`.
+// In the returned slice r, r[i] == s[i] for all i in [0, len(s)) and r[i] == v[i-len(s)] for all i in [len(s), len(s)+len(v)).
+// This function is O(len(s)+len(v)).
+func ConcatAll[S ~[]E, E any](s ...S) S {
+
+	if len(s) == 0 {
+		return make([]E, 0)
+	}
+
+	length := 0
+	for _, v := range s {
+		length += len(v)
+	}
+	s2 := make([]E, length)
+	i := 0
+	for _, v := range s {
+		copy(s2[i:], v)
+		i += len(v)
+	}
+
+	return s2
+
+}
+
+// Repeat creates a new slice that is the result of repeating `s` `n` times.
+// In the returned slice r, r[i] == s[i%len(s)] for all i in [0, len(s)*n).
+// Repeat panics if len(s)*n overflows, and returns an empty slice if n <= 0.
+// This function is O(len(s)*n).
+func Repeat[S ~[]E, E any](s S, n int) S {
+
+	if n <= 0 {
+		return make([]E, 0)
+	}
+
+	//detect overflow
+	length := len(s) * n
+	if length/n != len(s) {
+		panic("len(s)*n overflows")
+	}
+
+	s2 := make([]E, len(s)*n)
+	for i := 0; i < n; i++ {
+		copy(s2[i*len(s):], s)
+	}
+
+	return s2
+
+}
+
+// Map creates a new slice from `s` by applying `f` to each item.
+// In the returned slice r, r[i] == f(i, s[i]) for all i in [0, len(s)).
+// If f is nil, Map returns an empty slice.
+// This function is O(len(s)).
+func Map[S ~[]E, E any, T any](s S, f func(i int, e E) T) []T {
+
+	if len(s) == 0 || f == nil {
+		return make([]T, 0)
+	}
+
+	s2 := make([]T, len(s))
+	for i, v := range s {
+		s2[i] = f(i, v)
+	}
+	return s2
+
+}
+
+// Flat returns a shallow copy of `s` with all sub slices of `s` concatenated into it recursively up to `depth` times.
+// If `depth` is 0, Flat returns a copy of `s`.
+// If `depth` is negative, Flat panics.
+// Flat is expensive because it can't calculate the length of the returned slice.
+// So, it creates a temporary slice, and append each item (after flattening) to it causing a lot of memory re-allocations.
+//func Flat[S ~[]E, E any](s S, depth int) []E {
+//
+//	if depth == 0 {
+//		s2 := make([]E, len(s))
+//		copy(s2, s)
+//		return s2
+//	}
+//
+//	if depth < 0 {
+//		panic("depth must be >= 0")
+//	}
+//
+//	if len(s) == 0 {
+//		return make([]E, 0)
+//	}
+//
+//	s2 := make([]E, 0)
+//	for _, v := range s {
+//		if v1, ok := any(v).([]E); ok {
+//			s2 = append(s2, Flat(v1, depth-1)...)
+//		} else {
+//			s2 = append(s2, v1...)
+//		}
+//	}
+//	return s2
+//}
+
+// FlatMap returns a new slice formed by applying `f` to each item in s, and then flattening the results by one level.
+//func FlatMap[S ~[]E, E any, T any](s S, f func(i int, e E) []T) []T {
+//
+//	if len(s) == 0 || f == nil {
+//		return make([]T, 0)
+//	}
+//
+//	s2 := make([]T, 0)
+//	for i, v := range s {
+//		s2 = append(s2, f(i, v)...)
+//	}
+//	return s2
+//
+//}
+
+// Filter creates a new slice from `s` by selecting only the items that satisfy the predicate `f`.
+// In the returned slice r, r[i] == s[j] for all i in [0, len(r)) and f(j, s[j]) == true for all j in [0, len(s)).
+// If f is nil, Filter returns an empty slice.
+// This function is O(len(s)).
+func Filter[S ~[]E, E any](s S, f func(i int, e E) bool) (filtered S) {
+
+	if len(s) == 0 || f == nil {
+		return
+	}
+
+	for i, v := range s {
+		if f(i, v) {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
+
+}
+
+// Partition return two new slices from `s` by selecting only the items that satisfy the predicate `f` and the items that don't.
+// The first returned slice r1 contains all the items that satisfy the predicate `f`.
+// The second returned slice r2 contains all the items that don't satisfy the predicate `f`.
+// When f is called on each item, it's responsibility of the caller to make sure that the predicate is not changing the state of the slice.
+func Partition[S ~[]E, E any](s S, f func(i int, e E) bool) (matched S, unmatched S) {
+
+	if len(s) == 0 || f == nil {
+		return
+	}
+
+	for i, v := range s {
+		if f(i, v) {
+			matched = append(matched, v)
+		} else {
+			unmatched = append(unmatched, v)
+		}
+	}
+	return
 
 }
