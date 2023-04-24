@@ -91,7 +91,7 @@ func RemoveAt[S ~[]E, E any](s S, i int) S {
 // This function is O(len(s)).
 func RemoveRange[S ~[]E, E any](s S, i, j int) S {
 
-	// bounce checks. Equivalent to:
+	// bound checks. Equivalent to:
 	//	if i > j {
 	//		panic()
 	//	}
