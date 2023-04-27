@@ -4,7 +4,7 @@ import "math/bits"
 
 // mask returns the mask for the given hash and shift.
 func mask(hash uint64, shift int) uint64 {
-	return (hash >> shift) & ((1 << arity) - 1)
+	return (hash >> shift) & ((1 << arity) - 1) // (hash >> shift) & 0b111111
 }
 
 func index(bitmap uint64, bitpos int) int {

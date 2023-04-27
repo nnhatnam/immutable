@@ -6,10 +6,12 @@ import (
 )
 
 const (
-	bSpace         = 64
+	childPerNode   = 64
 	arity          = 6
 	width          = 2
-	exhaustedLevel = bSpace / arity
+	exhaustedLevel = childPerNode / arity
+
+	maxDepth = 55 // 64-bit hash, 6-bit per level, 64/6 ~ 11, 11*5 = 55 (accepted 5 rehashes)
 )
 
 //
@@ -78,26 +80,44 @@ func newNode[K comparable, V any]() *node[K, V] {
 }
 
 // panic if index is out of range
-func (n *node[K, V]) InsertContentAt(index int, k K, v V) bool {
-	recordIdx := width * index
-	nodeIdx := index + 1
+//func (n *node[K, V]) InsertContentAt(index int, k K, v V) bool {
+//	recordIdx := width * index
+//	nodeIdx := index + 1
+//
+//	_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
+//
+//	// n.contentArray = slices.Insert(n.contentArray, index, unsafe.Pointer(&r), unsafe.Pointer((*node[K, V])(nil)))
+//	n.contentArray = slices.Insert(n.contentArray, index, unsafe.Pointer(newRecord[K, V](k, v)), nil)
+//
+//	return true
+//}
+
+func (n *node[K, V]) InsertContentAt(bitpos int, k K, v V) bool {
+
+	if n.bitmap&(1<<uint(bitpos)) != 0 {
+		return false
+	}
+
+	recordIdx := width * index(n.bitmap, bitpos)
+	nodeIdx := recordIdx + 1
 
 	_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
 
 	// n.contentArray = slices.Insert(n.contentArray, index, unsafe.Pointer(&r), unsafe.Pointer((*node[K, V])(nil)))
-	n.contentArray = slices.Insert(n.contentArray, index, unsafe.Pointer(newRecord[K, V](k, v)), nil)
-
+	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(newRecord[K, V](k, v)), nil)
+	n.bitmap |= 1 << uint(bitpos)
 	return true
-
 }
 
 // panic if index is out of range
-func (n *node[K, V]) SetValueAt(index int, k K, v V) bool {
-	recordIdx := width * index
+func (n *node[K, V]) SetValueAt(bitpos int, k K, v V) bool {
+	recordIdx := width * index(n.bitmap, bitpos)
 
 	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
 
 	r := newRecord[K, V](k, v)
+
+	n.bitmap |= 1 << uint(bitpos)
 	n.contentArray[recordIdx] = unsafe.Pointer(&r)
 
 	return true
@@ -105,22 +125,25 @@ func (n *node[K, V]) SetValueAt(index int, k K, v V) bool {
 }
 
 // panic if index is out of range
-func (n *node[K, V]) SetRecordAt(index int, r *record[K, V]) bool {
-	recordIdx := width * index
+func (n *node[K, V]) SetRecordAt(bitpos int, r *record[K, V]) bool {
+
+	recordIdx := width * index(n.bitmap, bitpos)
 
 	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
 
+	n.bitmap |= 1 << uint(bitpos)
 	n.contentArray[recordIdx] = unsafe.Pointer(r)
 
 	return true
 
 }
 
-func (n *node[K, V]) SetNodeAt(index int, subNode *node[K, V]) bool {
-	nodeIdx := width*index + 1
+func (n *node[K, V]) SetNodeAt(bitpos int, subNode *node[K, V]) bool {
+	nodeIdx := width*index(n.bitmap, bitpos) + 1
 
 	_ = n.contentArray[nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
 
+	n.bitmap |= 1 << uint(bitpos)
 	n.contentArray[nodeIdx] = unsafe.Pointer(subNode)
 
 	return true
@@ -161,53 +184,87 @@ func New[K comparable, V any](h Hasher[K]) *HAMT[K, V] {
 	}
 }
 
+func (t *HAMT[K, V]) hash(key K, level int) uint64 {
+	if level == 0 {
+		return t.hasher.Hash(key)
+	}
+	return t.hasher.Rehash(key, level)
+}
+
 func (t *HAMT[K, V]) Len() int {
 	return t.len
 }
 
 // subroutin of mInsert
-func (t *HAMT[K, V]) mInsertCollision(n *node[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], shift int) bool {
+func (t *HAMT[K, V]) mInsertDoubleRecord(n *node[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], depth int) bool {
+
+	level := depth % (exhaustedLevel + 1)
+	shift, hashCount := level*arity, level/arity
 
 	//bitpos := t.hasher.Rehash(k1, 0)
+	bitpos := 1 << mask(keyHash, shift)
+	colpos := 1 << mask(colHash, shift)
 
+	if bitpos == colpos { // collision again
+		// we have to create a new node
+
+		n1 := newNode[K, V]()
+		n.SetNodeAt(bitpos, n1)
+
+		if level == exhaustedLevel {
+			keyHash = t.hash(r1.key, hashCount)
+			colHash = t.hash(r2.key, hashCount)
+
+			return t.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+		}
+
+		return t.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+	}
+
+	n.InsertContentAt(bitpos, r1.key, r1.value)
+	n.InsertContentAt(colpos, r2.key, r2.value)
+	return true
 }
 
-func (t *HAMT[K, V]) mInsertRecord(n *node[K, V], keyHash uint64, shift int, hashCount int, r *record[K, V]) (_ V, _ bool) {
+func (t *HAMT[K, V]) mInsertRecord(n *node[K, V], keyHash uint64, depth int, r *record[K, V]) (_ V, _ bool) {
 
-	bitpos := 1 << mask(keyHash, shift)
+	level := depth % (exhaustedLevel + 1)
+	shift, hashCount := level*arity, level/arity
+	loc := 1 << mask(keyHash, shift)
 
-	idx := index(n.bitmap, bitpos)
-
-	if n.bitmap&uint64(bitpos) == 0 { // no collision
-		n.bitmap |= uint64(bitpos)
-		n.InsertContentAt(idx, r.key, r.value)
+	if n.InsertContentAt(loc, r.key, r.value) {
 		return
 	}
 
-	colRecord, n1 := n.GetContentAt(idx)
+	colRecord, n1 := n.GetContentAt(loc)
 
-	if colRecord == nil { // collision
-
-		if shift+width >= bSpace { // we have reached the end of the hash, so we have to rehash
-			// rehash
-			keyHash = t.hasher.Rehash(r.key, hashCount)
-			return t.mInsertRecord(n, keyHash, 0, hashCount+1, r)
+	switch {
+	case colRecord == nil: // collision
+		// we have to create a new node
+		if level == exhaustedLevel {
+			keyHash = t.hash(r.key, hashCount)
+			return t.mInsertRecord(n1, keyHash, depth+1, r)
 		}
-		return t.mInsertRecord(n1, keyHash, shift+width, hashCount, r)
+		return t.mInsertRecord(n1, keyHash, depth+1, r)
+	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
+		if colRecord.key == r.key { // update
+			n.SetRecordAt(loc, r)
+			return colRecord.value, true
+		}
+
+		n2 := newNode[K, V]()
+		n.SetNodeAt(loc, n2)
+		n.SetRecordAt(loc, nil)
+
+		colHash := t.hash(colRecord.key, hashCount)
+		if level == exhaustedLevel {
+			keyHash = t.hash(r.key, hashCount)
+			t.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+			return
+		}
+
+		t.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
 
 	}
-
-	if colRecord.key == r.key { // update
-		n.SetRecordAt(idx, r)
-		return colRecord.value, true
-	}
-
-	n2 := newNode[K, V]()
-	if hashCount > 0 {
-
-		t.mInsertCollision(n2, keyHash, r, t.hasher.Rehash(colRecord.key, hashCount-1), colRecord, shift)
-		return
-	}
-	t.mInsertCollision(n2, keyHash, r, t.hasher.Hash(colRecord.key), colRecord, shift)
 	return
 }
