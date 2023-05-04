@@ -18,11 +18,14 @@ const (
 type Hasher[K comparable] interface {
 	Hash(key K) uint64
 
-	Rehash(key K, level int) uint64
+	// Rehash is used to rehash the key when the key is already hashed for the given level
+	Rehash(key K, prevHashCount int) uint64
 }
 
 type node[K comparable, V any] struct {
 	bitmap uint64
+
+	ref *HAMT[K, V] // reference to the HAMT that owns this node
 
 	contentArray []unsafe.Pointer // either suffix hash or []entry[K, V], *Value is stored in even slots, []entry[K, V] in odd slots.
 }
@@ -32,6 +35,65 @@ func newNode[K comparable, V any]() *node[K, V] {
 		contentArray: make([]unsafe.Pointer, 0),
 	}
 }
+
+func newNodeWithRef[K comparable, V any](ref *HAMT[K, V]) *node[K, V] {
+	return &node[K, V]{
+		contentArray: make([]unsafe.Pointer, 0),
+		ref:          ref,
+	}
+}
+
+func (n *node[K, V]) shallowCloneWithRef(ref *HAMT[K, V]) *node[K, V] {
+
+	n1 := n.shallowClone()
+	n1.ref = ref
+	return n1
+
+}
+
+func (n *node[K, V]) shallowClone() *node[K, V] {
+	n1 := &node[K, V]{
+		bitmap: n.bitmap,
+	}
+
+	n1.contentArray = make([]unsafe.Pointer, len(n.contentArray))
+	copy(n1.contentArray, n.contentArray)
+
+	return n1
+}
+
+//func (n *node[K, V]) incRef() *node[K, V] {
+//	if n != nil {
+//		atomic.AddInt32(&n.refCount, 1)
+//	}
+//	return n
+//}
+//
+//func (n *node[K, V]) decRef() {
+//	if n == nil {
+//		return
+//	}
+//
+//	if atomic.AddInt32(&n.refCount, -1) == 0 {
+//		// free the node
+//		for i := 0; i < len(n.contentArray)/2; i++ {
+//			recordIdx := i * 2
+//			nodeIdx := i*2 + 1
+//
+//			if n.contentArray[recordIdx] != nil {
+//				// free the record
+//				n.contentArray[recordIdx] = nil
+//			}
+//
+//			if n.contentArray[nodeIdx] != nil {
+//				// free the node
+//				n1 := (*node[K, V])(n.contentArray[nodeIdx])
+//				n1.decRef()
+//			}
+//		}
+//		n.contentArray = nil
+//	}
+//}
 
 func (n *node[K, V]) contentBlockInfo(loc int) (mask uint64, blockIndex int) {
 	mask = 1 << loc
@@ -80,13 +142,17 @@ func (n *node[K, V]) UpdateBlock(loc int, r *record[K, V], n1 *node[K, V]) bool 
 
 }
 
-func (n *node[K, V]) GetContentAt(loc int) (*record[K, V], *node[K, V]) {
+func (n *node[K, V]) TryGetBlock(loc int) (*record[K, V], *node[K, V]) {
 
 	_, blockIdx := n.contentBlockInfo(loc)
 	recordIdx := width * blockIdx
 	nodeIdx := recordIdx + 1
 
-	_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
+	if recordIdx >= len(n.contentArray) {
+		return nil, nil
+	}
+
+	//_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
 
 	return (*record[K, V])(n.contentArray[recordIdx]), (*node[K, V])(n.contentArray[nodeIdx])
 }
@@ -104,31 +170,35 @@ type HAMT[K comparable, V any] struct {
 func New[K comparable, V any](h Hasher[K]) *HAMT[K, V] {
 	return &HAMT[K, V]{
 		hasher: h,
-		//values: make([]V, 1, 32),
+		root:   newNode[K, V](),
 	}
 }
 
-func (t *HAMT[K, V]) hash(key K, level int) uint64 {
-	if level == 0 {
-		return t.hasher.Hash(key)
+func (m *HAMT[K, V]) hash(key K, depth int) uint64 {
+
+	prevHashCount := depth / (exhaustedLevel + 1)
+	if prevHashCount == 0 {
+		return m.hasher.Hash(key)
+	} else if depth > maxDepth {
+		panic("hash depth too deep, which mean there are too many collisions in the chosen hash function. Please choose a better hash function.")
 	}
-	return t.hasher.Rehash(key, level)
+
+	return m.hasher.Rehash(key, prevHashCount)
 }
 
-func (t *HAMT[K, V]) Len() int {
-	return t.len
+func (m *HAMT[K, V]) Len() int {
+	return m.len
 }
 
-// subroutin of mInsert
-func (t *HAMT[K, V]) mInsertDoubleRecord(n *node[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], depth int) bool {
+// subroutine of mInsert
+func (m *HAMT[K, V]) mInsertDoubleRecord(n *node[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], depth int) bool {
 	// The double record situation only happens when we have a collision at the previous level.
 	// When a collision happens, we have to create a new node and insert the two records into the new node.
 	// So we know that n is a new node for sure.
 
 	level := depth % (exhaustedLevel + 1)
-	shift, hashCount := level*arity, level/arity
+	shift := level * arity
 
-	//bitpos := t.hasher.Rehash(k1, 0)
 	bitpos := bucket(keyHash, shift)
 	colpos := bucket(colHash, shift)
 
@@ -139,13 +209,13 @@ func (t *HAMT[K, V]) mInsertDoubleRecord(n *node[K, V], keyHash uint64, r1 *reco
 			panic("impossible case. Need to investigate")
 		}
 		if level == exhaustedLevel {
-			keyHash = t.hash(r1.key, hashCount)
-			colHash = t.hash(r2.key, hashCount)
+			keyHash = m.hash(r1.key, depth)
+			colHash = m.hash(r2.key, depth)
 
-			return t.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+			return m.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
 		}
 
-		return t.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+		return m.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
 	}
 
 	n.TrySetBlock(bitpos, r1, nil)
@@ -154,27 +224,27 @@ func (t *HAMT[K, V]) mInsertDoubleRecord(n *node[K, V], keyHash uint64, r1 *reco
 	return true
 }
 
-func (t *HAMT[K, V]) mInsertRecord(n *node[K, V], keyHash uint64, depth int, r *record[K, V]) (_ V, _ bool) {
+func (m *HAMT[K, V]) mInsertRecord(n *node[K, V], keyHash uint64, depth int, r *record[K, V]) (_ V, _ bool) {
 
 	level := depth % (exhaustedLevel + 1)
-	shift, hashCount := level*arity, level/arity
+	shift := level * arity
 	loc := bucket(keyHash, shift)
 
 	if n.TrySetBlock(loc, r, nil) {
 		return
 	}
 
-	colRecord, n1 := n.GetContentAt(loc)
+	colRecord, n1 := n.TryGetBlock(loc)
 
 	switch {
 	case colRecord == nil: // collision
 		// we have to create a new node
 		if level == exhaustedLevel {
-			keyHash = t.hash(r.key, hashCount)
-			return t.mInsertRecord(n1, keyHash, depth+1, r)
+			keyHash = m.hash(r.key, depth)
+			return m.mInsertRecord(n1, keyHash, depth+1, r)
 		}
 
-		return t.mInsertRecord(n1, keyHash, depth+1, r)
+		return m.mInsertRecord(n1, keyHash, depth+1, r)
 	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
 
 		if colRecord.key == r.key { // update
@@ -185,27 +255,188 @@ func (t *HAMT[K, V]) mInsertRecord(n *node[K, V], keyHash uint64, depth int, r *
 		n2 := newNode[K, V]()
 		n.UpdateBlock(loc, nil, n2)
 
-		colHash := t.hash(colRecord.key, hashCount)
+		colHash := m.hash(colRecord.key, depth)
 		if level == exhaustedLevel {
-			keyHash = t.hash(r.key, hashCount)
-			t.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+			keyHash = m.hash(r.key, depth)
+			m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
 			return
 		}
 
-		t.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+		m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
 
 	}
 	return
 }
 
-func (t *HAMT[K, V]) get(n *node[K, V], k K, keyHash uint64, depth int) (_ V, _ bool) {
+func (m *HAMT[K, V]) replaceOrInsert(root *node[K, V], keyHash uint64, depth int, r *record[K, V]) (n *node[K, V], oldValue V, replaced bool) {
 
 	level := depth % (exhaustedLevel + 1)
-	shift, hashCount := level*arity, level/arity
+	shift := level * arity
+	loc := bucket(keyHash, shift)
+
+	n = root
+
+	if !m.mutable {
+		n = n.shallowClone()
+	}
+
+	if n.TrySetBlock(loc, r, nil) {
+		return
+	}
+
+	colRecord, n1 := n.TryGetBlock(loc)
+
+	switch {
+	case colRecord == nil: // collision
+		// we have to create a new node
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+		}
+
+		n1, oldValue, replaced = m.replaceOrInsert(n1, keyHash, depth+1, r)
+		n.UpdateBlock(loc, nil, n1)
+		return
+	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
+
+		if colRecord.key == r.key { // update
+			n.UpdateBlock(loc, r, nil)
+			return n, colRecord.value, true
+		}
+
+		n2 := newNode[K, V]()
+		n.UpdateBlock(loc, nil, n2)
+
+		colHash := m.hash(colRecord.key, depth)
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+			m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+			return
+		}
+
+		m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+
+	}
+	return
+}
+
+func (m *HAMT[K, V]) replaceOrInsertV2(root *node[K, V], keyHash uint64, depth int, r *record[K, V], pathCopy bool) (n *node[K, V], oldValue V, replaced bool) {
+
+	if root.refCount > 1 {
+		n = root.shallowCloneWithDecRef()
+		pathCopy = true
+	} else if pathCopy {
+		n = root.shallowClone()
+	} else {
+		n = root
+	}
+
+	level := depth % (exhaustedLevel + 1)
+	shift := level * arity
+	loc := bucket(keyHash, shift)
+
+	//n = root
+	//
+	//if !m.mutable {
+	//	n = n.shallowClone()
+	//}
+
+	if n.TrySetBlock(loc, r, nil) {
+		return
+	}
+
+	colRecord, n1 := n.TryGetBlock(loc)
+
+	switch {
+	case colRecord == nil: // collision
+		// we have to create a new node
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+		}
+
+		n1, oldValue, replaced = m.replaceOrInsert(n1, keyHash, depth+1, r)
+		n.UpdateBlock(loc, nil, n1)
+		return
+	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
+
+		if colRecord.key == r.key { // update
+			n.UpdateBlock(loc, r, nil)
+			return n, colRecord.value, true
+		}
+
+		n2 := newNode[K, V]()
+		n.UpdateBlock(loc, nil, n2)
+
+		colHash := m.hash(colRecord.key, depth)
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+			m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+			return
+		}
+
+		m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+
+	}
+	return
+}
+
+func (m *HAMT[K, V]) immutableInsertRecord(n *node[K, V], keyHash uint64, depth int, r *record[K, V]) (dup *node[K, V], oldValue V, replaced bool) {
+
+	level := depth % (exhaustedLevel + 1)
+	shift := level * arity
+	loc := bucket(keyHash, shift)
+
+	dup = n.shallowClone()
+	if dup.TrySetBlock(loc, r, nil) {
+		return
+	}
+
+	//if n.TrySetBlock(loc, r, nil) {
+	//	return
+	//}
+
+	colRecord, n1 := dup.TryGetBlock(loc)
+
+	switch {
+	case colRecord == nil:
+		// we have to create a new node
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+		}
+
+		var next *node[K, V]
+		next, oldValue, replaced = m.immutableInsertRecord(n1, keyHash, depth+1, r)
+		dup.UpdateBlock(loc, nil, next)
+		return
+
+	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
+
+		if colRecord.key == r.key { // update
+			dup.UpdateBlock(loc, r, nil)
+			return dup, colRecord.value, true
+		}
+
+		n2 := newNode[K, V]()
+		dup.UpdateBlock(loc, nil, n2)
+
+		colHash := m.hash(colRecord.key, depth)
+		if level == exhaustedLevel {
+			keyHash = m.hash(r.key, depth)
+		}
+
+		m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+
+	}
+	return
+}
+
+func (m *HAMT[K, V]) get(n *node[K, V], k K, keyHash uint64, depth int) (_ V, _ bool) {
+
+	level := depth % (exhaustedLevel + 1)
+	shift := level * arity
 
 	loc := bucket(keyHash, shift)
 
-	colRecord, n1 := n.GetContentAt(loc)
+	colRecord, n1 := n.TryGetBlock(loc)
 
 	if colRecord == nil && n1 == nil {
 		return
@@ -219,33 +450,50 @@ func (t *HAMT[K, V]) get(n *node[K, V], k K, keyHash uint64, depth int) (_ V, _ 
 	}
 
 	if level == exhaustedLevel {
-		keyHash = t.hash(k, hashCount)
+		keyHash = m.hash(k, depth)
 	}
 
-	return t.get(n1, k, keyHash, depth+1)
+	return m.get(n1, k, keyHash, depth+1)
 
 }
 
-func (t *HAMT[K, V]) ReplaceOrInsert(k K, v V) (_ V, _ bool) {
-	keyHash := t.hash(k, 0)
-	if t.root == nil {
-		t.root = newNode[K, V]()
+func (m *HAMT[K, V]) Set(k K, v V) *HAMT[K, V] {
+	keyHash := m.hash(k, 0)
+
+	trie := New[K, V](m.hasher)
+	//var oldValue V
+	var replaced bool
+
+	if m.root != nil {
+
+		trie.len = m.len
+		trie.root, _, replaced = trie.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v))
+
+	} else {
+		trie.root, _, replaced = trie.replaceOrInsert(trie.root, keyHash, 0, newRecord[K, V](k, v))
 	}
 
-	ret, ok := t.mInsertRecord(t.root, keyHash, 0, newRecord[K, V](k, v))
-	if !ok {
-		t.len++
+	if !replaced {
+		trie.len++
 	}
 
-	return ret, ok
+	return trie
 
 }
 
-func (t *HAMT[K, V]) Get(k K) (_ V, _ bool) {
-	if t.root == nil {
+func (m *HAMT[K, V]) Get(k K) (_ V, _ bool) {
+	if m.root == nil {
 		return
 	}
 
-	keyHash := t.hash(k, 0)
-	return t.get(t.root, k, keyHash, 0)
+	keyHash := m.hash(k, 0)
+	return m.get(m.root, k, keyHash, 0)
+}
+
+func (m *HAMT[K, V]) Clone() *HAMT[K, V] {
+	return &HAMT[K, V]{
+		root:   m.root.incRef(),
+		len:    m.len,
+		hasher: m.hasher,
+	}
 }
