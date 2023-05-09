@@ -1,4 +1,4 @@
-package xlices
+package slice
 
 // Set creates a new slice that is identical to `s` except that the element at index `i` is set to `v`.
 // Set panics if `i` is out of range.
