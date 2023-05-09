@@ -1,11 +1,28 @@
 package hamt
 
 import (
-	"golang.org/x/exp/slices"
 	"math/bits"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/nnhatnam/immutable/slice"
 )
+
+const (
+	childPerNode   = 64
+	arity          = 6
+	width          = 2
+	exhaustedLevel = childPerNode / arity
+
+	maxDepth = 55 // 64-bit hash, 6-bit per level, 64/6 ~ 11, 11*5 = 55 (accepted 5 rehashes)
+)
+
+type Hasher[K comparable] interface {
+	Hash(key K) uint64
+
+	// Rehash is used to rehash the key when the key is already hashed for the given level
+	Rehash(key K, prevHashCount int) uint64
+}
 
 type mapNode[K comparable, V any] struct {
 	bitmap   uint64
@@ -14,16 +31,9 @@ type mapNode[K comparable, V any] struct {
 	contentArray []unsafe.Pointer // either suffix hash or []entry[K, V], *Value is stored in even slots, []entry[K, V] in odd slots.
 }
 
-func newMapNode[K comparable, V any]() *mapNode[K, V] {
-	return &mapNode[K, V]{
-		contentArray: make([]unsafe.Pointer, 0),
-	}
-}
-
-//func newMapNodeWithRef[K comparable, V any]() *mapNode[K, V] {
+//func newMapNode[K comparable, V any]() *mapNode[K, V] {
 //	return &mapNode[K, V]{
 //		contentArray: make([]unsafe.Pointer, 0),
-//		refCount:     1,
 //	}
 //}
 
@@ -35,7 +45,8 @@ func newMapNodeWithRef[K comparable, V any]() *mapNode[K, V] {
 }
 
 func (n *mapNode[K, V]) shallowCloneWithRef() *mapNode[K, V] {
-	atomic.AddInt32(&n.refCount, -1)
+	//atomic.AddInt32(&n.refCount, -1)
+	n.decRef()
 
 	n1 := &mapNode[K, V]{
 		bitmap:   n.bitmap,
@@ -60,17 +71,17 @@ func (n *mapNode[K, V]) shallowCloneWithRef() *mapNode[K, V] {
 
 }
 
-func (n *mapNode[K, V]) shallowClone() *mapNode[K, V] {
-	n1 := &mapNode[K, V]{
-		bitmap:   n.bitmap,
-		refCount: 1,
-	}
-
-	n1.contentArray = make([]unsafe.Pointer, len(n.contentArray))
-	copy(n1.contentArray, n.contentArray)
-
-	return n1
-}
+//func (n *mapNode[K, V]) shallowClone() *mapNode[K, V] {
+//	n1 := &mapNode[K, V]{
+//		bitmap:   n.bitmap,
+//		refCount: 1,
+//	}
+//
+//	n1.contentArray = make([]unsafe.Pointer, len(n.contentArray))
+//	copy(n1.contentArray, n.contentArray)
+//
+//	return n1
+//}
 
 func (n *mapNode[K, V]) incRef() *mapNode[K, V] {
 	if n != nil {
@@ -105,25 +116,6 @@ func (n *mapNode[K, V]) decRef() {
 	}
 }
 
-func (n *mapNode[K, V]) isLeaf(loc int) bool {
-	mask, blockIdx := n.contentBlockInfo(loc)
-	recordIdx := width * blockIdx
-	// nodeIdx := recordIdx + 1
-
-	// if the block is empty, it's not a leaf
-	if n.bitmap&mask == 0 {
-		return false
-	}
-
-	if recordIdx >= len(n.contentArray) {
-		return false
-	}
-
-	//_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
-
-	return (*record[K, V])(n.contentArray[recordIdx]) != nil
-}
-
 func (n *mapNode[K, V]) contentBlockInfo(loc int) (mask uint64, blockIndex int) {
 	mask = 1 << loc
 
@@ -135,19 +127,19 @@ func (n *mapNode[K, V]) contentBlockInfo(loc int) (mask uint64, blockIndex int) 
 	return
 }
 
-func (n *mapNode[K, V]) getContentIdx(loc int) (recordIdx int, nodeIdx int) {
-	var mask uint64 = 1 << loc
-	blockIdx := 0
-
-	if mask > 0 {
-		// find the block index
-		blockIdx = bits.OnesCount64(n.bitmap & (mask - 1))
-	}
-
-	recordIdx = width * blockIdx
-	nodeIdx = recordIdx + 1
-	return recordIdx, nodeIdx
-}
+//func (n *mapNode[K, V]) getContentIdx(loc int) (recordIdx int, nodeIdx int) {
+//	var mask uint64 = 1 << loc
+//	blockIdx := 0
+//
+//	if mask > 0 {
+//		// find the block index
+//		blockIdx = bits.OnesCount64(n.bitmap & (mask - 1))
+//	}
+//
+//	recordIdx = width * blockIdx
+//	nodeIdx = recordIdx + 1
+//	return recordIdx, nodeIdx
+//}
 
 func (n *mapNode[K, V]) getContentIndexFromMask(mask uint64) (recordIdx int, nodeIdx int) {
 
@@ -164,37 +156,37 @@ func (n *mapNode[K, V]) getContentIndexFromMask(mask uint64) (recordIdx int, nod
 }
 
 // TryInsertBlock tries to set the record at the given location. If the location is already occupied, return false
-func (n *mapNode[K, V]) TryInsertBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
+//func (n *mapNode[K, V]) TryInsertBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
+//
+//	mask, blockIdx := n.contentBlockInfo(loc)
+//
+//	// if the block is not empty, we can't set. return false
+//	if n.bitmap&mask != 0 {
+//		return false
+//	}
+//
+//	recordIdx := width * blockIdx
+//
+//	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), unsafe.Pointer(n1))
+//	n.bitmap |= mask
+//	return true
+//
+//}
 
-	mask, blockIdx := n.contentBlockInfo(loc)
-
-	// if the block is not empty, we can't set. return false
-	if n.bitmap&mask != 0 {
-		return false
-	}
-
-	recordIdx := width * blockIdx
-
-	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), unsafe.Pointer(n1))
-	n.bitmap |= mask
-	return true
-
-}
-
-func (n *mapNode[K, V]) UpdateBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
-
-	_, blockIdx := n.contentBlockInfo(loc)
-	recordIdx := width * blockIdx
-
-	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
-
-	//n.bitmap |= mask
-	n.contentArray[recordIdx] = unsafe.Pointer(r)
-	n.contentArray[recordIdx+1] = unsafe.Pointer(n1)
-
-	return true
-
-}
+//func (n *mapNode[K, V]) UpdateBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
+//
+//	_, blockIdx := n.contentBlockInfo(loc)
+//	recordIdx := width * blockIdx
+//
+//	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
+//
+//	//n.bitmap |= mask
+//	n.contentArray[recordIdx] = unsafe.Pointer(r)
+//	n.contentArray[recordIdx+1] = unsafe.Pointer(n1)
+//
+//	return true
+//
+//}
 
 func (n *mapNode[K, V]) TryGetBlock(loc int) (*record[K, V], *mapNode[K, V]) {
 
@@ -261,7 +253,7 @@ func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uin
 		// we have to create a new node
 
 		n1 := newMapNodeWithRef[K, V]()
-		n.contentArray = slices.Insert(n.contentArray, recordIdx, nil, unsafe.Pointer(n1))
+		n.contentArray = slice.Insert(n.contentArray, recordIdx, nil, unsafe.Pointer(n1))
 		n.bitmap |= mask
 
 		if level == exhaustedLevel {
@@ -273,13 +265,13 @@ func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uin
 		return n
 	}
 
-	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r1), nil)
+	n.contentArray = slice.Insert(n.contentArray, recordIdx, unsafe.Pointer(r1), nil)
 	n.bitmap |= mask
 	mask = 1 << colpos
 
 	recordIdx, _ = n.getContentIndexFromMask(mask)
 
-	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r2), nil)
+	n.contentArray = slice.Insert(n.contentArray, recordIdx, unsafe.Pointer(r2), nil)
 	n.bitmap |= mask
 	m.len++
 	return n
@@ -304,7 +296,7 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	// if the block is empty, we can insert the record directly
 	if n.bitmap&mask == 0 {
 
-		n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), nil)
+		n.contentArray = slice.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), nil)
 		n.bitmap |= mask
 		m.len++
 		return n
@@ -347,6 +339,61 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	}
 
 	return n
+}
+
+func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, depth int, pathCopy bool) (*mapNode[K, V], bool) {
+
+	if n.refCount > 1 || pathCopy {
+		pathCopy = true
+		n = n.shallowCloneWithRef()
+		//fmt.Println("must shallow clone")
+	}
+
+	level := depth % (exhaustedLevel + 1)
+	shift := level * arity
+	loc := bucket(keyHash, shift)
+
+	var mask uint64 = 1 << loc
+	recordIdx, nodeIdx := n.getContentIndexFromMask(mask)
+	// can't find the key to delete
+	if n.bitmap&mask == 0 {
+		return n, false
+	}
+
+	colRecord, n1 := (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
+
+	if colRecord == nil {
+		if level == exhaustedLevel {
+			keyHash = m.hash(k, depth+1)
+		}
+		var deleted bool
+		n1, deleted = m.delete(n1, k, keyHash, depth+1, pathCopy)
+		n.contentArray[nodeIdx] = unsafe.Pointer(n1)
+		if n1 == nil {
+			n.contentArray = slice.RemoveRange(n.contentArray, recordIdx, nodeIdx+1)
+			n.bitmap ^= mask
+			if n.bitmap == 0 {
+				return nil, true
+			}
+		}
+
+		return n, deleted
+	}
+
+	if colRecord.key == k {
+		n.contentArray[recordIdx] = nil
+		n.contentArray = slice.RemoveRange(n.contentArray, recordIdx, nodeIdx+1)
+		n.bitmap ^= mask
+		m.len--
+
+		// if there is only one record left, remove the node
+		if n.bitmap == 0 {
+			return nil, true
+		}
+		return n, true
+	}
+
+	return n, false
 }
 
 func (m *PersistentHAMT[K, V]) get(n *mapNode[K, V], k K, keyHash uint64, depth int) (_ V, _ bool) {
@@ -402,4 +449,15 @@ func (m *PersistentHAMT[K, V]) Clone() *PersistentHAMT[K, V] {
 		len:    m.len,
 		hasher: m.hasher,
 	}
+}
+
+func (m *PersistentHAMT[K, V]) Delete(k K) bool {
+	if m.root == nil {
+		return false
+	}
+
+	keyHash := m.hash(k, 0)
+	var deleted bool
+	m.root, deleted = m.delete(m.root, k, keyHash, 0, false)
+	return deleted
 }

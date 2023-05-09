@@ -41,7 +41,6 @@ func newCollisionHasher[K comparable]() *collisionHasher[K] {
 func (hs *collisionHasher[K]) Hash(key string) uint64 {
 	switch key {
 	case "a":
-
 		return 0b000000
 	case "b":
 		// return 64 bit binary 10
@@ -51,6 +50,8 @@ func (hs *collisionHasher[K]) Hash(key string) uint64 {
 	case "d":
 		// collision with c
 		return 0b111110111111000000 // 0.63.62
+	case "e":
+		return 0b111110111111000011
 	case "rehash2time_1":
 		return 0b000100
 	case "rehash2time_2":
@@ -59,6 +60,14 @@ func (hs *collisionHasher[K]) Hash(key string) uint64 {
 		return 0b000010
 	case "panic2":
 		return 0b000010
+	case "col_with_a":
+		return 0b000000
+	case "col_with_b":
+		return 0b111111000000
+	case "col_with_c":
+		return 0b111110111111000000
+	case "col_with_d":
+		return 0b111110111111000000 // 0.63.62
 	}
 	panic("This Hash is created for testing purposes and test cases are limited on words above, so this case should not happen")
 }
@@ -67,7 +76,6 @@ func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
 
 	switch key {
 	case "a":
-
 		return 0b000001
 	case "b":
 		// return 64 bit binary 10
@@ -76,6 +84,8 @@ func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
 		return 0b111110111111000000
 	case "d":
 		return 0b111110111111000001
+	case "e":
+		return 0b111110111111000011
 	case "rehash2time_1":
 		if level <= 1 {
 			return 0b000100
@@ -90,6 +100,14 @@ func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
 		return 0b000010
 	case "panic2":
 		return 0b000010
+	case "col_with_a":
+		return 0b000011
+	case "col_with_b":
+		return 0b111111000011
+	case "col_with_c":
+		return 0b111110111111000100
+	case "col_with_d":
+		return 0b101110111111000001
 	}
 	panic("test cases are limited on words above, so this case should not happen")
 
