@@ -1,7 +1,6 @@
 package hamt
 
 import (
-	"fmt"
 	"golang.org/x/exp/slices"
 	"math/bits"
 	"sync/atomic"
@@ -35,12 +34,6 @@ func newMapNodeWithRef[K comparable, V any]() *mapNode[K, V] {
 	}
 }
 
-func newMapNode2[K comparable, V any]() *mapNode[K, V] {
-	return &mapNode[K, V]{
-		contentArray: make([]unsafe.Pointer, 0),
-	}
-}
-
 func (n *mapNode[K, V]) shallowCloneWithRef() *mapNode[K, V] {
 	atomic.AddInt32(&n.refCount, -1)
 
@@ -50,13 +43,12 @@ func (n *mapNode[K, V]) shallowCloneWithRef() *mapNode[K, V] {
 	}
 
 	n1.contentArray = make([]unsafe.Pointer, len(n.contentArray))
-
 	for i := 0; i < len(n.contentArray)/2; i++ {
 
 		recordIdx := i * 2
 		nodeIdx := i*2 + 1
 		n1.contentArray[recordIdx] = n.contentArray[recordIdx]
-		if n1.contentArray[nodeIdx] != nil {
+		if n.contentArray[nodeIdx] != nil {
 			n1.contentArray[nodeIdx] = n.contentArray[nodeIdx]
 			(*mapNode[K, V])(n1.contentArray[nodeIdx]).incRef()
 		}
@@ -230,7 +222,7 @@ type PersistentHAMT[K comparable, V any] struct {
 func NewPersistentHAMT[K comparable, V any](h Hasher[K]) *PersistentHAMT[K, V] {
 	return &PersistentHAMT[K, V]{
 		hasher: h,
-		root:   newMapNode[K, V](),
+		root:   newMapNodeWithRef[K, V](),
 	}
 }
 
@@ -298,6 +290,7 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	if n.refCount > 1 || pathCopy {
 		pathCopy = true
 		n = n.shallowCloneWithRef()
+		//fmt.Println("must shallow clone")
 	}
 
 	level := depth % (exhaustedLevel + 1)
@@ -318,14 +311,13 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	}
 
 	// if the block is not empty, we have to check if there is a collision
-	//colRecord, n1 := n.TryGetBlock(loc)
-
 	colRecord, n1 := (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
 
+	//fmt.Println("col and record: ", colRecord, n1)
 	if colRecord == nil {
 
 		if level == exhaustedLevel {
-			keyHash = m.hash(r.key, depth)
+			keyHash = m.hash(r.key, depth+1)
 		}
 		n1 = m.replaceOrInsert(n1, keyHash, depth+1, r, pathCopy)
 
@@ -334,8 +326,9 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	} else if n1 == nil {
 		// n1 == nil && colRecord != nil => update or expand
 		if colRecord.key == r.key { // update
+
 			n.contentArray[recordIdx] = unsafe.Pointer(r)
-			m.len++
+			//m.len++
 			return n
 		}
 
@@ -345,9 +338,6 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 		colHash := m.hash(colRecord.key, depth)
 		if level == exhaustedLevel {
 			keyHash = m.hash(r.key, depth)
-			//n2 = m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
-			//n.contentArray[nodeIdx] = unsafe.Pointer(n2)
-			//return
 		}
 		n.contentArray[recordIdx] = nil // remove the record
 		n2 = m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
@@ -355,7 +345,7 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 		n.contentArray[nodeIdx] = unsafe.Pointer(n2)
 
 	}
-	fmt.Println("return n then: ", n, &n, *n, m.root)
+
 	return n
 }
 
