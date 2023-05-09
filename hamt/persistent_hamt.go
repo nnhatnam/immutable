@@ -1,6 +1,7 @@
 package hamt
 
 import (
+	"fmt"
 	"golang.org/x/exp/slices"
 	"math/bits"
 	"sync/atomic"
@@ -112,6 +113,25 @@ func (n *mapNode[K, V]) decRef() {
 	}
 }
 
+func (n *mapNode[K, V]) isLeaf(loc int) bool {
+	mask, blockIdx := n.contentBlockInfo(loc)
+	recordIdx := width * blockIdx
+	// nodeIdx := recordIdx + 1
+
+	// if the block is empty, it's not a leaf
+	if n.bitmap&mask == 0 {
+		return false
+	}
+
+	if recordIdx >= len(n.contentArray) {
+		return false
+	}
+
+	//_ = n.contentArray[recordIdx:nodeIdx] // bounds check hint to compiler; see golang.org/issue/14808
+
+	return (*record[K, V])(n.contentArray[recordIdx]) != nil
+}
+
 func (n *mapNode[K, V]) contentBlockInfo(loc int) (mask uint64, blockIndex int) {
 	mask = 1 << loc
 
@@ -121,6 +141,34 @@ func (n *mapNode[K, V]) contentBlockInfo(loc int) (mask uint64, blockIndex int) 
 	}
 
 	return
+}
+
+func (n *mapNode[K, V]) getContentIdx(loc int) (recordIdx int, nodeIdx int) {
+	var mask uint64 = 1 << loc
+	blockIdx := 0
+
+	if mask > 0 {
+		// find the block index
+		blockIdx = bits.OnesCount64(n.bitmap & (mask - 1))
+	}
+
+	recordIdx = width * blockIdx
+	nodeIdx = recordIdx + 1
+	return recordIdx, nodeIdx
+}
+
+func (n *mapNode[K, V]) getContentIndexFromMask(mask uint64) (recordIdx int, nodeIdx int) {
+
+	blockIdx := 0
+
+	if mask > 0 {
+		// find the block index
+		blockIdx = bits.OnesCount64(n.bitmap & (mask - 1))
+	}
+
+	recordIdx = width * blockIdx
+	nodeIdx = recordIdx + 1
+	return recordIdx, nodeIdx
 }
 
 // TryInsertBlock tries to set the record at the given location. If the location is already occupied, return false
@@ -137,27 +185,9 @@ func (n *mapNode[K, V]) TryInsertBlock(loc int, r *record[K, V], n1 *mapNode[K, 
 
 	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), unsafe.Pointer(n1))
 	n.bitmap |= mask
-
 	return true
 
 }
-
-// UpdateBlock set the record at the given location. It will overwrite the existing record if there is any
-// Panics if there is no existing records at the give location. Only call it when you are sure the location already has a record.
-//func (n *mapNode[K, V]) UpdateBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
-//
-//	_, blockIdx := n.contentBlockInfo(loc)
-//	recordIdx := width * blockIdx
-//
-//	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
-//
-//	//n.bitmap |= mask
-//	n.contentArray[recordIdx] = unsafe.Pointer(r)
-//	n.contentArray[recordIdx+1] = unsafe.Pointer(n1)
-//
-//	return true
-//
-//}
 
 func (n *mapNode[K, V]) UpdateBlock(loc int, r *record[K, V], n1 *mapNode[K, V]) bool {
 
@@ -179,7 +209,6 @@ func (n *mapNode[K, V]) TryGetBlock(loc int) (*record[K, V], *mapNode[K, V]) {
 	_, blockIdx := n.contentBlockInfo(loc)
 	recordIdx := width * blockIdx
 	nodeIdx := recordIdx + 1
-
 	if recordIdx >= len(n.contentArray) {
 		return nil, nil
 	}
@@ -222,7 +251,7 @@ func (m *PersistentHAMT[K, V]) Len() int {
 }
 
 // subroutine of mInsert
-func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], depth int) bool {
+func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uint64, r1 *record[K, V], colHash uint64, r2 *record[K, V], depth int) *mapNode[K, V] {
 	// The double record situation only happens when we have a collision at the previous level.
 	// When a collision happens, we have to create a new node and insert the two records into the new node.
 	// So we know that n is a new node for sure.
@@ -233,82 +262,101 @@ func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uin
 	bitpos := bucket(keyHash, shift)
 	colpos := bucket(colHash, shift)
 
+	var mask uint64 = 1 << bitpos
+	recordIdx, _ := n.getContentIndexFromMask(mask)
+
 	if bitpos == colpos { // collision again
 		// we have to create a new node
+
 		n1 := newMapNodeWithRef[K, V]()
-		if !n.TryInsertBlock(bitpos, nil, n1) {
-			panic("impossible case. Need to investigate")
-		}
+		n.contentArray = slices.Insert(n.contentArray, recordIdx, nil, unsafe.Pointer(n1))
+		n.bitmap |= mask
+
 		if level == exhaustedLevel {
-			keyHash = m.hash(r1.key, depth)
-			colHash = m.hash(r2.key, depth)
-
-			return m.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+			keyHash = m.hash(r1.key, depth+1)
+			colHash = m.hash(r2.key, depth+1)
 		}
 
-		return m.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+		m.mInsertDoubleRecord(n1, keyHash, r1, colHash, r2, depth+1)
+		return n
 	}
 
-	n.TryInsertBlock(bitpos, r1, nil)
-	n.TryInsertBlock(colpos, r2, nil)
+	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r1), nil)
+	n.bitmap |= mask
+	mask = 1 << colpos
 
-	return true
+	recordIdx, _ = n.getContentIndexFromMask(mask)
+
+	n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r2), nil)
+	n.bitmap |= mask
+	m.len++
+	return n
 }
 
-func (m *PersistentHAMT[K, V]) replaceOrInsert(root *mapNode[K, V], keyHash uint64, depth int, r *record[K, V]) (n *mapNode[K, V], oldValue V, replaced bool) {
+func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64, depth int, r *record[K, V], pathCopy bool) *mapNode[K, V] {
 
-	if root.refCount > 1 {
-		n = root.shallowCloneWithRef()
-
-	} else {
-		n = root
+	if n.refCount > 1 || pathCopy {
+		pathCopy = true
+		n = n.shallowCloneWithRef()
 	}
 
 	level := depth % (exhaustedLevel + 1)
 	shift := level * arity
 	loc := bucket(keyHash, shift)
 
+	var mask uint64 = 1 << loc
+
+	recordIdx, nodeIdx := n.getContentIndexFromMask(mask)
+
 	// if the block is empty, we can insert the record directly
-	if n.TryInsertBlock(loc, r, nil) {
-		return
+	if n.bitmap&mask == 0 {
+
+		n.contentArray = slices.Insert(n.contentArray, recordIdx, unsafe.Pointer(r), nil)
+		n.bitmap |= mask
+		m.len++
+		return n
 	}
 
-	colRecord, n1 := n.TryGetBlock(loc)
+	// if the block is not empty, we have to check if there is a collision
+	//colRecord, n1 := n.TryGetBlock(loc)
 
-	switch {
-	case colRecord == nil: // collision
-		// we have to create a new node
+	colRecord, n1 := (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
+
+	if colRecord == nil {
+
 		if level == exhaustedLevel {
 			keyHash = m.hash(r.key, depth)
 		}
-		var next *mapNode[K, V]
-		next, oldValue, replaced = m.replaceOrInsert(n1, keyHash, depth+1, r)
-		if next == n1 {
-			n1.decRef()
-		}
-		n.UpdateBlock(loc, nil, next)
-		return
-	case n1 == nil: // n1 == nil && colRecord != nil => update or expand
+		n1 = m.replaceOrInsert(n1, keyHash, depth+1, r, pathCopy)
 
+		n.contentArray[nodeIdx] = unsafe.Pointer(n1)
+		return n
+	} else if n1 == nil {
+		// n1 == nil && colRecord != nil => update or expand
 		if colRecord.key == r.key { // update
-			n.UpdateBlock(loc, r, nil)
-			return n, colRecord.value, true
+			n.contentArray[recordIdx] = unsafe.Pointer(r)
+			m.len++
+			return n
 		}
 
+		n.contentArray[recordIdx] = nil
 		n2 := newMapNodeWithRef[K, V]()
-		n.UpdateBlock(loc, nil, n2)
 
 		colHash := m.hash(colRecord.key, depth)
 		if level == exhaustedLevel {
 			keyHash = m.hash(r.key, depth)
-			m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
-			return
+			//n2 = m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+			//n.contentArray[nodeIdx] = unsafe.Pointer(n2)
+			//return
 		}
+		n.contentArray[recordIdx] = nil // remove the record
+		n2 = m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
 
-		m.mInsertDoubleRecord(n2, keyHash, r, colHash, colRecord, depth+1)
+		n.contentArray[nodeIdx] = unsafe.Pointer(n2)
 
 	}
-	return
+	fmt.Println("return n then: ", n, &n, *n, m.root)
+	return n
 }
 
 func (m *PersistentHAMT[K, V]) get(n *mapNode[K, V], k K, keyHash uint64, depth int) (_ V, _ bool) {
@@ -332,34 +380,20 @@ func (m *PersistentHAMT[K, V]) get(n *mapNode[K, V], k K, keyHash uint64, depth 
 	}
 
 	if level == exhaustedLevel {
-		keyHash = m.hash(k, depth)
+		keyHash = m.hash(k, depth+1)
 	}
-
 	return m.get(n1, k, keyHash, depth+1)
 
 }
 
-func (m *PersistentHAMT[K, V]) Set(k K, v V) *PersistentHAMT[K, V] {
+func (m *PersistentHAMT[K, V]) Set(k K, v V) {
 	keyHash := m.hash(k, 0)
 
-	trie := NewPersistentHAMT[K, V](m.hasher)
-	//var oldValue V
-	var replaced bool
-
-	if m.root != nil {
-
-		trie.len = m.len
-		trie.root, _, replaced = trie.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v))
-
-	} else {
-		trie.root, _, replaced = trie.replaceOrInsert(trie.root, keyHash, 0, newRecord[K, V](k, v))
+	if m.root == nil {
+		m.root = newMapNodeWithRef[K, V]()
 	}
 
-	if !replaced {
-		trie.len++
-	}
-
-	return trie
+	m.root = m.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v), false)
 
 }
 

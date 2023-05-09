@@ -116,8 +116,7 @@ func TestNewMutableHamt(t *testing.T) {
 
 }
 
-//
-//func TestNewMutableHamtV1(t *testing.T) {
+// func TestNewMutableHamtV1(t *testing.T) {
 //
 //	trie := New[string, int](newHasher[string]())
 //
@@ -146,85 +145,84 @@ func TestNewMutableHamt(t *testing.T) {
 //		t.Errorf("trie.Get() = %d, want %d", result, 2)
 //	}
 //
-//}
-//
-//type collisionHasher[K comparable] struct{}
-//
-//func newCollisionHasher[K comparable]() *collisionHasher[K] {
-//	return &collisionHasher[K]{}
-//}
-//
-//func (hs *collisionHasher[K]) Hash(key string) uint64 {
-//	switch key {
-//	case "a":
-//
-//		return 0b000000
-//	case "b":
-//		// return 64 bit binary 10
-//		return 0b111111000000
-//	case "c":
-//		return 0b111110111111000000 // 0.63.62
-//	case "d":
-//		// collision with c
-//		return 0b111110111111000000 // 0.63.62
-//	case "rehash2time_1":
-//		return 0b000100
-//	case "rehash2time_2":
-//		return 0b000100
-//	case "panic1":
-//		return 0b000010
-//	case "panic2":
-//		return 0b000010
-//	}
-//	panic("This Hash is created for testing purposes and test cases are limited on words above, so this case should not happen")
-//}
-//
-//func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
-//
-//	switch key {
-//	case "a":
-//
-//		return 0b000001
-//	case "b":
-//		// return 64 bit binary 10
-//		return 0b111111000001
-//	case "c":
-//		return 0b111110111111000000
-//	case "d":
-//		return 0b111110111111000001
-//	case "rehash2time_1":
-//		if level <= 1 {
-//			return 0b000100
-//		}
-//		return 0b001100
-//	case "rehash2time_2":
-//		if level < 1 {
-//			return 0b000100
-//		}
-//		return 0b000100
-//	case "panic1":
-//		return 0b000010
-//	case "panic2":
-//		return 0b000010
-//	}
-//	panic("test cases are limited on words above, so this case should not happen")
-//
-//}
-//
-//func insertItem(t *testing.T, trie *HAMT[string, int], key string, value int, expectedLen int) {
-//	trie.mReplaceOrInsert(key, value)
-//
-//	if trie.Len() != expectedLen {
-//		t.Errorf("trie.Len() = %d, want %d", trie.Len(), expectedLen)
-//	}
-//
-//	result, ok := trie.Get(key)
-//
-//	if !ok || result != value {
-//		t.Errorf("trie.Get() = %d, want %d", result, value)
-//	}
-//}
-//
+// }
+type collisionHasher[K comparable] struct{}
+
+func newCollisionHasher[K comparable]() *collisionHasher[K] {
+	return &collisionHasher[K]{}
+}
+
+func (hs *collisionHasher[K]) Hash(key string) uint64 {
+	switch key {
+	case "a":
+
+		return 0b000000
+	case "b":
+		// return 64 bit binary 10
+		return 0b111111000000
+	case "c":
+		return 0b111110111111000000 // 0.63.62
+	case "d":
+		// collision with c
+		return 0b111110111111000000 // 0.63.62
+	case "rehash2time_1":
+		return 0b000100
+	case "rehash2time_2":
+		return 0b000100
+	case "panic1":
+		return 0b000010
+	case "panic2":
+		return 0b000010
+	}
+	panic("This Hash is created for testing purposes and test cases are limited on words above, so this case should not happen")
+}
+
+func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
+
+	switch key {
+	case "a":
+
+		return 0b000001
+	case "b":
+		// return 64 bit binary 10
+		return 0b111111000001
+	case "c":
+		return 0b111110111111000000
+	case "d":
+		return 0b111110111111000001
+	case "rehash2time_1":
+		if level <= 1 {
+			return 0b000100
+		}
+		return 0b001100
+	case "rehash2time_2":
+		if level < 1 {
+			return 0b000100
+		}
+		return 0b000100
+	case "panic1":
+		return 0b000010
+	case "panic2":
+		return 0b000010
+	}
+	panic("test cases are limited on words above, so this case should not happen")
+
+}
+
+func insertItem(t *testing.T, trie *HAMT[string, int], key string, value int, expectedLen int) {
+	trie.mReplaceOrInsert(key, value)
+
+	if trie.Len() != expectedLen {
+		t.Errorf("trie.Len() = %d, want %d", trie.Len(), expectedLen)
+	}
+
+	result, ok := trie.Get(key)
+
+	if !ok || result != value {
+		t.Errorf("trie.Get() = %d, want %d", result, value)
+	}
+}
+
 //func TestHAMTBasicInsertion(t *testing.T) {
 //	trie := New[string, int](newCollisionHasher[string]())
 //
