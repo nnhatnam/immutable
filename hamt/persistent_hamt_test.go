@@ -1,7 +1,10 @@
 package hamt
 
 import (
+	"fmt"
 	"golang.org/x/exp/slices"
+	"reflect"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 )
@@ -346,36 +349,330 @@ func deleteItem(t *testing.T, trie *PersistentHAMT[string, int], key string, exp
 }
 
 func TestPersistentHAMTDelete(t *testing.T) {
-	t.Run("Basic Delete", func(t *testing.T) {
+	t.Run("Basic Deletion", func(t *testing.T) {
 		trie := NewPersistentHAMT[string, int](newCollisionHasher[string]())
 
-		insertItem(t, trie, "a", 1, 1)
-		insertItem(t, trie, "b", 2, 2)
-		insertItem(t, trie, "c", 3, 3)
+		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+			insertItem(t, trie, v, k+1, k+1)
+		}
 
-		insertItem(t, trie, "d", 4, 4)
-		insertItem(t, trie, "rehash2time_1", 5, 5)
-		insertItem(t, trie, "rehash2time_2", 6, 6)
+		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
 
-		insertItem(t, trie, "panic1", 7, 7)
-
-		deleteItem(t, trie, "a", 6, true)
-
-		deleteItem(t, trie, "b", 5, true)
-
-		deleteItem(t, trie, "c", 4, true)
-		deleteItem(t, trie, "d", 3, true)
-
-		deleteItem(t, trie, "rehash2time_1", 2, true)
-		deleteItem(t, trie, "rehash2time_2", 1, true)
-
-		deleteItem(t, trie, "panic1", 0, true)
+			deleteItem(t, trie, v, 6-k, true)
+		}
 
 		if trie.root != nil {
 			t.Errorf("trie.root = %v, want %v", trie.root, nil)
 		}
 
-		//clone := trie.Clone()
+		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+			insertItem(t, trie, v, k+1, k+1)
+		}
 
+		clone := trie.Clone()
+
+		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+
+			deleteItem(t, clone, v, 6-k, true)
+		}
+		if clone.root != nil {
+			t.Errorf("clone.root = %v, want %v", clone.root, nil)
+		}
+		if trie.root == nil || trie.Len() != 7 {
+			t.Errorf("trie.root is nil")
+		}
+		validateSharedNode(t, trie, clone, 0)
 	})
+}
+
+// test cases from golang.org/x/tools/internal/persistent
+type mapEntry struct {
+	key   int
+	value int
+}
+
+type validatedMap struct {
+	impl     *PersistentHAMT[int, int]
+	expected map[int]int      // current key-value mapping.
+	deleted  map[mapEntry]int // maps deleted entries to their clock time of last deletion
+	seen     map[mapEntry]int // maps seen entries to their clock time of last insertion
+	clock    int
+}
+
+func TestSimpleMap(t *testing.T) {
+
+	deletedEntries := make(map[mapEntry]int)
+	seenEntries := make(map[mapEntry]int)
+
+	inp := make(map[string]int)
+	for i := 0; i < 10000; i++ {
+		gen := generateUUID()
+		inp[gen] = i
+	}
+
+	m1 := &validatedMap{
+		impl:     NewPersistentHAMT[int, int](newIntHasher()),
+		expected: make(map[int]int),
+		deleted:  deletedEntries,
+		seen:     seenEntries,
+	}
+
+	m3 := m1.clone()
+	validateRef(t, m1, m3)
+
+	m3.set(t, 8, 8)
+	validateRef(t, m1, m3)
+
+	m3.destroy()
+
+	assertSameMap(t, entrySet(deletedEntries), map[mapEntry]struct{}{
+		{key: 8, value: 8}: {},
+	})
+
+	validateRef(t, m1)
+
+	m1.set(t, 1, 1)
+	validateRef(t, m1)
+	m1.set(t, 2, 2)
+	validateRef(t, m1)
+	m1.set(t, 3, 3)
+	validateRef(t, m1)
+	fmt.Println("remove 2")
+	m1.remove(t, 2)
+	return
+	validateRef(t, m1)
+	m1.set(t, 6, 6)
+	validateRef(t, m1)
+
+	assertSameMap(t, entrySet(deletedEntries), map[mapEntry]struct{}{
+		{key: 2, value: 2}: {},
+		{key: 8, value: 8}: {},
+	})
+
+	//gotAllocs := int(testing.AllocsPerRun(10, func() {
+	//	m1.impl.Delete(100)
+	//	m1.impl.Delete(1)
+	//}))
+	//wantAllocs := 0
+	//if gotAllocs != wantAllocs {
+	//	t.Errorf("wanted %d allocs, got %d", wantAllocs, gotAllocs)
+	//}
+}
+
+func dumpMap(t *testing.T, prefix string, n *mapNode[int, int]) {
+
+	if n == nil {
+		t.Logf("%s nil", prefix)
+		return
+	}
+	//t.Logf("%s {key: %v, value: %v (ref: %v), ref: %v, weight: %v}", prefix, n.key, n.value.value, n.value.refCount, n.refCount)
+	fmt.Println(n.contentArray)
+	for i := 0; i < len(n.contentArray)/2; i++ {
+		recordIdx := width * i
+		nodeIdx := width*i + 1
+
+		if n.contentArray[recordIdx] != nil {
+			//r := (*record[int, int])(n.contentArray[recordIdx])
+			//t.Logf("%s %d {key : %v , value : %v}", prefix, i, r.key, r.value)
+		}
+
+		if n.contentArray[nodeIdx] != nil {
+			dumpMap(t, prefix+"->", (*mapNode[int, int])(n.contentArray[nodeIdx]))
+		}
+	}
+
+}
+
+func entrySet(m map[mapEntry]int) map[mapEntry]struct{} {
+	set := make(map[mapEntry]struct{})
+	for k := range m {
+		set[k] = struct{}{}
+	}
+	return set
+}
+
+func validateRef(t *testing.T, maps ...*validatedMap) {
+	t.Helper()
+
+	actualCountByEntry := make(map[mapEntry]int32)
+	nodesByEntry := make(map[mapEntry]map[*mapNode[int, int]]struct{})
+	expectedCountByEntry := make(map[mapEntry]int32)
+	for i, m := range maps {
+		fmt.Println("validateRef", i)
+		count := atomic.LoadInt32(&m.impl.root.refCount)
+		dfsRefV2(m.impl.root, actualCountByEntry, nodesByEntry, count)
+		dumpMap(t, fmt.Sprintf("%d: root ->", i), m.impl.root)
+	}
+	for entry, nodes := range nodesByEntry {
+		expectedCountByEntry[entry] = int32(len(nodes))
+	}
+	assertSameMap(t, expectedCountByEntry, actualCountByEntry)
+}
+
+func dfsRefV2(node *mapNode[int, int], countByEntry map[mapEntry]int32, nodesByEntry map[mapEntry]map[*mapNode[int, int]]struct{}, trueCount int32) {
+	if node == nil {
+		return
+	}
+
+	if count := atomic.LoadInt32(&node.refCount); count > 1 {
+		trueCount += count - 1
+	}
+
+	for i := 0; i < len(node.contentArray)/2; i++ {
+		recordIdx := width * i
+		nodeIdx := width*i + 1
+
+		if node.contentArray[recordIdx] != nil {
+			r := (*record[int, int])(node.contentArray[recordIdx])
+			entry := mapEntry{key: r.key, value: r.value}
+			count := atomic.LoadInt32(&r.refCount)
+
+			countByEntry[entry] = trueCount + count - 1
+
+			nodes, ok := nodesByEntry[entry]
+			if !ok {
+				nodes = make(map[*mapNode[int, int]]struct{})
+				nodesByEntry[entry] = nodes
+			}
+			nodes[node] = struct{}{}
+			//if count := atomic.LoadInt32(&r.refCount); count > 1 {
+			//	countByEntry[entry] = trueCount + count - 1
+			//} else {
+			//	countByEntry[entry] = trueCount
+			//}
+
+		}
+
+		if node.contentArray[nodeIdx] != nil {
+			dfsRefV2((*mapNode[int, int])(node.contentArray[nodeIdx]), countByEntry, nodesByEntry, trueCount)
+		}
+
+	}
+
+}
+
+func (vm *validatedMap) set(t *testing.T, key int, value int) {
+	entry := mapEntry{key, value}
+
+	vm.clock++
+	vm.seen[entry] = vm.clock
+
+	vm.impl.Put(key, value, func(deletedKey int, deletedValue int) {
+		fmt.Println("Yes yes yes, Release", deletedKey, deletedValue)
+		if deletedKey != key || deletedValue != value {
+			t.Fatalf("unexpected passed in deleted entry: %v/%v, expected: %v/%v", deletedKey, deletedValue, key, value)
+		}
+		// Not safe if closure shared between two validatedMaps.
+		vm.deleted[entry] = vm.clock
+	})
+	vm.expected[key] = value
+
+	gotValue, ok := vm.impl.Get(key)
+	if !ok || gotValue != value {
+		t.Fatalf("unexpected get result after insertion, key: %v, expected: %v, got: %v (%v)", key, value, gotValue, ok)
+	}
+}
+
+func (vm *validatedMap) validate(t *testing.T) {
+	t.Helper()
+
+	validateNode(t, vm.impl.root)
+
+	// Note: this validation may not make sense if maps were constructed using
+	// SetAll operations. If this proves to be problematic, remove the clock,
+	// deleted, and seen fields.
+	for key, value := range vm.expected {
+		entry := mapEntry{key: key, value: value}
+		if deleteAt := vm.deleted[entry]; deleteAt > vm.seen[entry] {
+			t.Fatalf("entry is deleted prematurely, key: %d, value: %d", key, value)
+		}
+	}
+
+	actualMap := make(map[int]int, len(vm.expected))
+	vm.impl.Range(func(key, value int) bool {
+		if other, ok := actualMap[key]; ok {
+			t.Fatalf("key is present twice, key: %d, first value: %d, second value: %d", key, value, other)
+		}
+		actualMap[key] = value
+		return false
+	})
+
+	assertSameMap(t, actualMap, vm.expected)
+}
+
+func validateNode(t *testing.T, node *mapNode[int, int]) {
+	if node == nil {
+		return
+	}
+
+	if node.contentArray == nil {
+		t.Fatalf("node content array is nil")
+	}
+
+	if len(node.contentArray)%2 != 0 {
+		t.Fatalf("node content array length is not even")
+	}
+
+	if node.bitmap == 0 {
+		t.Fatalf("node bitmap is 0")
+	}
+
+	hasValue := false
+	for i := 0; i < len(node.contentArray)/2; i++ {
+
+		recordIdx := width * i
+		nodeIdx := width*i + 1
+
+		if node.contentArray[recordIdx] != nil || node.contentArray[nodeIdx] != nil {
+			hasValue = true
+		}
+
+		if node.contentArray[nodeIdx] != nil {
+			validateNode(t, (*mapNode[int, int])(node.contentArray[nodeIdx]))
+		}
+
+	}
+
+	if !hasValue {
+		t.Fatalf("node has no value")
+	}
+
+}
+
+func (vm *validatedMap) remove(t *testing.T, key int) {
+	vm.clock++
+	vm.impl.Delete(key)
+	delete(vm.expected, key)
+	vm.validate(t)
+
+	gotValue, ok := vm.impl.Get(key)
+	if ok {
+		t.Fatalf("unexpected get result after removal, key: %v, got: %v", key, gotValue)
+	}
+}
+
+func (vm *validatedMap) clone() *validatedMap {
+	expected := make(map[int]int, len(vm.expected))
+	for key, value := range vm.expected {
+		expected[key] = value
+	}
+
+	return &validatedMap{
+		impl:     vm.impl.Clone(),
+		expected: expected,
+		deleted:  vm.deleted,
+		seen:     vm.seen,
+	}
+}
+
+func (vm *validatedMap) destroy() {
+	vm.impl.Destroy()
+}
+
+func assertSameMap(t *testing.T, map1, map2 interface{}) {
+	t.Helper()
+
+	if !reflect.DeepEqual(map1, map2) {
+		t.Fatalf("different maps:\n%v\nvs\n%v", map1, map2)
+	}
 }

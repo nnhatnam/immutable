@@ -1,6 +1,7 @@
 package hamt
 
 import (
+	"fmt"
 	"math/bits"
 	"sync/atomic"
 	"unsafe"
@@ -58,7 +59,12 @@ func (n *mapNode[K, V]) shallowCloneWithRef() *mapNode[K, V] {
 
 		recordIdx := i * 2
 		nodeIdx := i*2 + 1
-		n1.contentArray[recordIdx] = n.contentArray[recordIdx]
+
+		if n.contentArray[recordIdx] != nil {
+			n1.contentArray[recordIdx] = n.contentArray[recordIdx]
+			(*record[K, V])(n1.contentArray[recordIdx]).incRef()
+		}
+
 		if n.contentArray[nodeIdx] != nil {
 			n1.contentArray[nodeIdx] = n.contentArray[nodeIdx]
 			(*mapNode[K, V])(n1.contentArray[nodeIdx]).incRef()
@@ -103,6 +109,8 @@ func (n *mapNode[K, V]) decRef() {
 
 			if n.contentArray[recordIdx] != nil {
 				// free the record
+
+				(*record[K, V])(n.contentArray[recordIdx]).decRef()
 				n.contentArray[recordIdx] = nil
 			}
 
@@ -110,6 +118,7 @@ func (n *mapNode[K, V]) decRef() {
 				// free the node
 				n1 := (*mapNode[K, V])(n.contentArray[nodeIdx])
 				n1.decRef()
+				n.contentArray[nodeIdx] = nil
 			}
 		}
 		n.contentArray = nil
@@ -202,6 +211,13 @@ func (n *mapNode[K, V]) TryGetBlock(loc int) (*record[K, V], *mapNode[K, V]) {
 	return (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
 }
 
+func (n *mapNode[K, V]) updateRecord(recordIdx int, r *record[K, V]) {
+
+	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
+	(*record[K, V])(n.contentArray[recordIdx]).decRef()
+	n.contentArray[recordIdx] = unsafe.Pointer(r)
+}
+
 type PersistentHAMT[K comparable, V any] struct {
 	root *mapNode[K, V]
 	len  int
@@ -279,7 +295,7 @@ func (m *PersistentHAMT[K, V]) mInsertDoubleRecord(n *mapNode[K, V], keyHash uin
 
 func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64, depth int, r *record[K, V], pathCopy bool) *mapNode[K, V] {
 
-	if n.refCount > 1 || pathCopy {
+	if atomic.LoadInt32(&n.refCount) > 1 || pathCopy {
 		pathCopy = true
 		n = n.shallowCloneWithRef()
 		//fmt.Println("must shallow clone")
@@ -319,8 +335,9 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 		// n1 == nil && colRecord != nil => update or expand
 		if colRecord.key == r.key { // update
 
+			//n.updateRecord(recordIdx, r)
+			(*record[K, V])(n.contentArray[recordIdx]).decRef()
 			n.contentArray[recordIdx] = unsafe.Pointer(r)
-			//m.len++
 			return n
 		}
 
@@ -343,10 +360,10 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 
 func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, depth int, pathCopy bool) (*mapNode[K, V], bool) {
 
-	if n.refCount > 1 || pathCopy {
+	if atomic.LoadInt32(&n.refCount) > 1 || pathCopy {
 		pathCopy = true
 		n = n.shallowCloneWithRef()
-		//fmt.Println("must shallow clone")
+		fmt.Println("must shallow clone")
 	}
 
 	level := depth % (exhaustedLevel + 1)
@@ -361,7 +378,6 @@ func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, dep
 	}
 
 	colRecord, n1 := (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
-
 	if colRecord == nil {
 		if level == exhaustedLevel {
 			keyHash = m.hash(k, depth+1)
@@ -381,6 +397,7 @@ func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, dep
 	}
 
 	if colRecord.key == k {
+		(*record[K, V])(n.contentArray[recordIdx]).decRef()
 		n.contentArray[recordIdx] = nil
 		n.contentArray = slice.RemoveRange(n.contentArray, recordIdx, nodeIdx+1)
 		n.bitmap ^= mask
@@ -394,6 +411,32 @@ func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, dep
 	}
 
 	return n, false
+}
+
+func (m *PersistentHAMT[K, V]) _range(n *mapNode[K, V], iter func(k K, v V) bool) bool {
+	if n == nil {
+		return false
+	}
+
+	for i := 0; i < len(n.contentArray)/2; i++ {
+		recordIdx := width * i
+		nodeIdx := width*i + 1
+
+		if n.contentArray[recordIdx] != nil {
+			//if f((*mapNode[K, V])(n.contentArray[nodeIdx])) {
+			//	return
+			//}
+			rec := (*record[K, V])(n.contentArray[recordIdx])
+			if iter(rec.key, rec.value) {
+				return true
+			}
+			if m._range((*mapNode[K, V])(n.contentArray[nodeIdx]), iter) {
+				return true
+			}
+		}
+	}
+	return false
+
 }
 
 func (m *PersistentHAMT[K, V]) get(n *mapNode[K, V], k K, keyHash uint64, depth int) (_ V, _ bool) {
@@ -424,14 +467,24 @@ func (m *PersistentHAMT[K, V]) get(n *mapNode[K, V], k K, keyHash uint64, depth 
 }
 
 func (m *PersistentHAMT[K, V]) Set(k K, v V) {
+	//keyHash := m.hash(k, 0)
+	//
+	//if m.root == nil {
+	//	m.root = newMapNodeWithRef[K, V]()
+	//}
+	//
+	//m.root = m.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v, release), false)
+	m.Put(k, v, nil)
+}
+
+func (m *PersistentHAMT[K, V]) Put(k K, v V, release func(key K, value V)) {
 	keyHash := m.hash(k, 0)
 
 	if m.root == nil {
 		m.root = newMapNodeWithRef[K, V]()
 	}
 
-	m.root = m.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v), false)
-
+	m.root = m.replaceOrInsert(m.root, keyHash, 0, newRecord[K, V](k, v, release), false)
 }
 
 func (m *PersistentHAMT[K, V]) Get(k K) (_ V, _ bool) {
@@ -460,4 +513,17 @@ func (m *PersistentHAMT[K, V]) Delete(k K) bool {
 	var deleted bool
 	m.root, deleted = m.delete(m.root, k, keyHash, 0, false)
 	return deleted
+}
+
+func (m *PersistentHAMT[K, V]) Range(f func(k K, v V) bool) {
+	m._range(m.root, f)
+}
+
+func (m *PersistentHAMT[K, V]) Clear() {
+	m.root.decRef()
+	m.root = nil // GC
+}
+
+func (m *PersistentHAMT[K, V]) Destroy() {
+	m.Clear()
 }

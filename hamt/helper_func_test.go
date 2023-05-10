@@ -130,3 +130,20 @@ func (hs *mySimpleHasher[K]) Rehash(key string, level int) uint64 {
 
 	return xxhash.Sum64String(key)
 }
+
+type intHasher struct{}
+
+func newIntHasher() *intHasher {
+	return &intHasher{}
+}
+
+func (hs *intHasher) Hash(key int) uint64 {
+	return murmur3.Sum64([]byte(fmt.Sprint(key)))
+}
+
+func (hs *intHasher) Rehash(key int, level int) uint64 {
+
+	s := fmt.Sprint(key) + fmt.Sprint(level)
+
+	return xxhash.Sum64String(s)
+}
