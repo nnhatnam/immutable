@@ -68,6 +68,14 @@ func (hs *collisionHasher[K]) Hash(key string) uint64 {
 		return 0b111110111111000000
 	case "col_with_d":
 		return 0b111110111111000000 // 0.63.62
+	case "fullhash_1":
+		return 1 << 63
+	case "fullhash_2":
+		return (1<<63 - 1) | (1 << 62)
+	case "fullhash_1_collision":
+		return 1 << 63
+	case "fullhash_2_non_insert_collision":
+		return (1<<63 - 1) | (1 << 62)
 	}
 	panic("This Hash is created for testing purposes and test cases are limited on words above, so this case should not happen")
 }
@@ -108,6 +116,10 @@ func (hs *collisionHasher[K]) Rehash(key string, level int) uint64 {
 		return 0b111110111111000100
 	case "col_with_d":
 		return 0b101110111111000001
+	case "fullhash_1":
+		return 0b000111
+	case "fullhash_1_collision":
+		return 0b001111
 	}
 	panic("test cases are limited on words above, so this case should not happen")
 

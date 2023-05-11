@@ -88,8 +88,13 @@ func TestPersistentHAMTInsertion(t *testing.T) {
 		insertItem(t, trie, "panic1", 7, 7)
 
 		if !panics(func() { trie.Set("panic2", 8) }) {
-			t.Errorf("trie.ReplaceOrInsert() should panic")
+			t.Errorf("trie.ReplaceOrInsert() should panic") // Should we keep the expansion ?
 		}
+
+		insertItem(t, trie, "fullhash_1", 8, 8)
+		insertItem(t, trie, "fullhash_2", 9, 9)
+		insertItem(t, trie, "fullhash_1_collision", 10, 10)
+
 	})
 
 	t.Run("Random Insertion", func(t *testing.T) {
@@ -218,6 +223,15 @@ func TestPersistentHAMTClone(t *testing.T) {
 		}
 
 		insertItem(t, clone, "e", 80, trie.Len()+1)
+
+		clone.Destroy()
+
+		// clone after destroy
+		clone2 := clone.Clone()
+
+		if clone2.root != nil {
+			t.Errorf("Clone a nil root should result in nil root, clone2.root = %v, want %v", clone2.root, nil)
+		}
 	})
 
 	t.Run("Basic Clone with collision", func(t *testing.T) {
@@ -353,36 +367,93 @@ func TestPersistentHAMTDelete(t *testing.T) {
 	t.Run("Basic Deletion", func(t *testing.T) {
 		trie := NewPersistentHAMT[string, int](newCollisionHasher[string]())
 
-		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+		insertionList := []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2",
+			"panic1", "fullhash_1", "fullhash_2", "fullhash_1_collision"}
+
+		for k, v := range insertionList {
 			insertItem(t, trie, v, k+1, k+1)
 		}
 
-		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+		for k, v := range insertionList {
 
-			deleteItem(t, trie, v, 6-k, true)
+			deleteItem(t, trie, v, 9-k, true)
 		}
 
 		if trie.root != nil {
 			t.Errorf("trie.root = %v, want %v", trie.root, nil)
 		}
 
-		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+		for k, v := range insertionList {
 			insertItem(t, trie, v, k+1, k+1)
 		}
 
 		clone := trie.Clone()
 
-		for k, v := range []string{"a", "b", "c", "d", "rehash2time_1", "rehash2time_2", "panic1"} {
+		for k, v := range insertionList {
 
-			deleteItem(t, clone, v, 6-k, true)
+			deleteItem(t, clone, v, 9-k, true)
 		}
 		if clone.root != nil {
 			t.Errorf("clone.root = %v, want %v", clone.root, nil)
 		}
-		if trie.root == nil || trie.Len() != 7 {
+		if trie.root == nil || trie.Len() != len(insertionList) {
 			t.Errorf("trie.root is nil")
 		}
 		validateSharedNode(t, trie, clone, 0)
+
+		clone.Destroy()
+
+		ok := clone.Delete("a")
+		if ok {
+			t.Errorf("clone.Delete(a) = %v, want %v", ok, false)
+		}
+
+		clone1 := trie.Clone()
+		clone2 := trie.Clone()
+		fmt.Println("----------------------------------clone 1 len", clone1.Len())
+		deleteItem(t, clone1, "fullhash_1", 9, true)
+		deleteItem(t, clone2, "fullhash_2", 9, true)
+		deleteItem(t, clone1, "fullhash_2_non_insert_collision", 9, false)
+
+		// The tests below are intentionally for Range testing
+		var found bool
+		clone1.Range(func(key string, value int) bool {
+
+			if key == "fullhash_2" {
+				found = true
+			}
+			return found
+		})
+
+		if !found {
+			t.Errorf("clone1 should have fullhash_2")
+		}
+
+		found = false
+
+		clone1.Range(func(key string, value int) bool {
+
+			if key == "fullhash_1_collision" {
+				found = true
+			}
+			return found
+		})
+
+		if !found {
+			t.Errorf("clone1 should have fullhash_1_collision")
+		}
+
+		clone2.Destroy()
+
+		count := 0
+		clone2.Range(func(key string, value int) bool {
+			count++
+			return false
+		})
+
+		if count != 0 {
+			t.Errorf("clone2 should be empty")
+		}
 	})
 }
 
@@ -462,8 +533,8 @@ func TestSimpleMap(t *testing.T) {
 	keyhash2 := m1.impl.hash(1, 0)
 	gotAllocs := int(testing.AllocsPerRun(10, func() {
 		// Can not test this on m1.impl.Delete because the hash function's allocs are not deterministic.
-		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 100, keyhash1, 0, false, 1)
-		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 1, keyhash2, 0, false, 1)
+		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 100, keyhash1, 0, 1)
+		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 1, keyhash2, 0, 1)
 	}))
 	wantAllocs := 0
 	if gotAllocs != wantAllocs {
@@ -507,14 +578,14 @@ func TestSimpleMap(t *testing.T) {
 	assertSameMap(t, entrySet(seenEntries), entrySet(deletedEntries))
 }
 
-func toArray(m *PersistentHAMT[int, int]) []int {
-	var result []int
-	m.Range(func(k int, v int) bool {
-		result = append(result, k)
-		return false
-	})
-	return result
-}
+//func toArray(m *PersistentHAMT[int, int]) []int {
+//	var result []int
+//	m.Range(func(k int, v int) bool {
+//		result = append(result, k)
+//		return false
+//	})
+//	return result
+//}
 
 func TestRandomMap(t *testing.T) {
 	deletedEntries := make(map[mapEntry]int)
