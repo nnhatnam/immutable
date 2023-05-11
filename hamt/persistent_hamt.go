@@ -1,7 +1,6 @@
 package hamt
 
 import (
-	"fmt"
 	"math/bits"
 	"sync/atomic"
 	"unsafe"
@@ -211,12 +210,12 @@ func (n *mapNode[K, V]) TryGetBlock(loc int) (*record[K, V], *mapNode[K, V]) {
 	return (*record[K, V])(n.contentArray[recordIdx]), (*mapNode[K, V])(n.contentArray[nodeIdx])
 }
 
-func (n *mapNode[K, V]) updateRecord(recordIdx int, r *record[K, V]) {
-
-	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
-	(*record[K, V])(n.contentArray[recordIdx]).decRef()
-	n.contentArray[recordIdx] = unsafe.Pointer(r)
-}
+//func (n *mapNode[K, V]) updateRecord(recordIdx int, r *record[K, V]) {
+//
+//	_ = n.contentArray[recordIdx] // bounds check hint to compiler; see golang.org/issue/14808
+//	(*record[K, V])(n.contentArray[recordIdx]).decRef()
+//	n.contentArray[recordIdx] = unsafe.Pointer(r)
+//}
 
 type PersistentHAMT[K comparable, V any] struct {
 	root *mapNode[K, V]
@@ -358,12 +357,15 @@ func (m *PersistentHAMT[K, V]) replaceOrInsert(n *mapNode[K, V], keyHash uint64,
 	return n
 }
 
-func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, depth int, pathCopy bool) (*mapNode[K, V], bool) {
-
-	if atomic.LoadInt32(&n.refCount) > 1 || pathCopy {
+func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, depth int, pathCopy bool, trueCount int32) (*mapNode[K, V], bool) {
+	refCount := atomic.LoadInt32(&n.refCount)
+	if refCount > 1 {
 		pathCopy = true
 		n = n.shallowCloneWithRef()
-		fmt.Println("must shallow clone")
+		trueCount += refCount - 1
+	} else if pathCopy {
+		pathCopy = true
+		n = n.shallowCloneWithRef()
 	}
 
 	level := depth % (exhaustedLevel + 1)
@@ -383,7 +385,7 @@ func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, dep
 			keyHash = m.hash(k, depth+1)
 		}
 		var deleted bool
-		n1, deleted = m.delete(n1, k, keyHash, depth+1, pathCopy)
+		n1, deleted = m.delete(n1, k, keyHash, depth+1, pathCopy, trueCount)
 		n.contentArray[nodeIdx] = unsafe.Pointer(n1)
 		if n1 == nil {
 			n.contentArray = slice.RemoveRange(n.contentArray, recordIdx, nodeIdx+1)
@@ -397,7 +399,10 @@ func (m *PersistentHAMT[K, V]) delete(n *mapNode[K, V], k K, keyHash uint64, dep
 	}
 
 	if colRecord.key == k {
-		(*record[K, V])(n.contentArray[recordIdx]).decRef()
+		if trueCount >= 1 {
+			(*record[K, V])(n.contentArray[recordIdx]).decRef()
+		}
+
 		n.contentArray[recordIdx] = nil
 		n.contentArray = slice.RemoveRange(n.contentArray, recordIdx, nodeIdx+1)
 		n.bitmap ^= mask
@@ -430,6 +435,10 @@ func (m *PersistentHAMT[K, V]) _range(n *mapNode[K, V], iter func(k K, v V) bool
 			if iter(rec.key, rec.value) {
 				return true
 			}
+
+		}
+
+		if n.contentArray[nodeIdx] != nil {
 			if m._range((*mapNode[K, V])(n.contentArray[nodeIdx]), iter) {
 				return true
 			}
@@ -511,7 +520,18 @@ func (m *PersistentHAMT[K, V]) Delete(k K) bool {
 
 	keyHash := m.hash(k, 0)
 	var deleted bool
-	m.root, deleted = m.delete(m.root, k, keyHash, 0, false)
+	m.root, deleted = m.delete(m.root, k, keyHash, 0, false, 1)
+	return deleted
+}
+
+func (m *PersistentHAMT[K, V]) Delete1(k K) bool {
+	if m.root == nil {
+		return false
+	}
+
+	keyHash := m.hash(k, 0)
+	var deleted bool
+	m.root, deleted = m.delete(m.root, k, keyHash, 0, false, 1)
 	return deleted
 }
 

@@ -28,9 +28,13 @@ func (r *record[K, V]) incRef() *record[K, V] {
 
 func (r *record[K, V]) decRef() {
 	if r != nil {
+
 		if atomic.AddInt32(&r.refCount, -1) == 0 {
-			r.release(r.key, r.value)
-			r.release = nil
+			if r.release != nil {
+				r.release(r.key, r.value)
+				r.release = nil
+			}
+
 		}
 	}
 }

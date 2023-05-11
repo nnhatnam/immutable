@@ -3,6 +3,7 @@ package hamt
 import (
 	"fmt"
 	"golang.org/x/exp/slices"
+	"math/rand"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -37,23 +38,23 @@ func dfsRef[K comparable, V any](t *testing.T, n *mapNode[K, V], f func(n *mapNo
 	return
 }
 
-//func TestNewPersistentHAMT(t *testing.T) {
-//
-//	trie := NewPersistentHAMT[string, int](newHasher[string]())
-//
-//	trie.Set("immutable", 1)
-//
-//	if trie.Len() != 1 {
-//		t.Errorf("trie.Len() = %d, want %d", trie.Len(), 1)
-//	}
-//
-//	result, ok := trie.Get("immutable")
-//
-//	if !ok || result != 1 {
-//		t.Errorf("trie.Get() = %d, want %d", result, 1)
-//	}
-//
-//}
+func TestNewPersistentHAMT(t *testing.T) {
+
+	trie := NewPersistentHAMT[string, int](newHasher[string]())
+
+	trie.Set("immutable", 1)
+
+	if trie.Len() != 1 {
+		t.Errorf("trie.Len() = %d, want %d", trie.Len(), 1)
+	}
+
+	result, ok := trie.Get("immutable")
+
+	if !ok || result != 1 {
+		t.Errorf("trie.Get() = %d, want %d", result, 1)
+	}
+
+}
 
 func insertItem(t *testing.T, trie *PersistentHAMT[string, int], key string, value int, expectedLen int) {
 	t.Helper()
@@ -418,10 +419,10 @@ func TestSimpleMap(t *testing.T) {
 	}
 
 	m3 := m1.clone()
-	validateRef(t, m1, m3)
+	validateRefV3(t, m1, m3)
 
 	m3.set(t, 8, 8)
-	validateRef(t, m1, m3)
+	validateRefV3(t, m1, m3)
 
 	m3.destroy()
 
@@ -429,34 +430,122 @@ func TestSimpleMap(t *testing.T) {
 		{key: 8, value: 8}: {},
 	})
 
-	validateRef(t, m1)
+	validateRefV3(t, m1)
 
 	m1.set(t, 1, 1)
-	validateRef(t, m1)
+	validateRefV3(t, m1)
 	m1.set(t, 2, 2)
-	validateRef(t, m1)
+	validateRefV3(t, m1)
 	m1.set(t, 3, 3)
-	validateRef(t, m1)
-	fmt.Println("remove 2")
+	validateRefV3(t, m1)
 	m1.remove(t, 2)
-	return
-	validateRef(t, m1)
+	validateRefV3(t, m1)
 	m1.set(t, 6, 6)
-	validateRef(t, m1)
+	validateRefV3(t, m1)
 
 	assertSameMap(t, entrySet(deletedEntries), map[mapEntry]struct{}{
 		{key: 2, value: 2}: {},
 		{key: 8, value: 8}: {},
 	})
 
-	//gotAllocs := int(testing.AllocsPerRun(10, func() {
-	//	m1.impl.Delete(100)
-	//	m1.impl.Delete(1)
-	//}))
-	//wantAllocs := 0
-	//if gotAllocs != wantAllocs {
-	//	t.Errorf("wanted %d allocs, got %d", wantAllocs, gotAllocs)
-	//}
+	//m1.impl.Range(func(k int, v int) bool {
+	//	return false
+	//})
+	m2 := m1.clone()
+	validateRefV3(t, m1, m2)
+	m1.set(t, 6, 60)
+	validateRefV3(t, m1, m2)
+	m1.remove(t, 1)
+	validateRefV3(t, m1, m2)
+
+	keyhash1 := m1.impl.hash(100, 0)
+	keyhash2 := m1.impl.hash(1, 0)
+	gotAllocs := int(testing.AllocsPerRun(10, func() {
+		// Can not test this on m1.impl.Delete because the hash function's allocs are not deterministic.
+		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 100, keyhash1, 0, false, 1)
+		m1.impl.root, _ = m1.impl.delete(m1.impl.root, 1, keyhash2, 0, false, 1)
+	}))
+	wantAllocs := 0
+	if gotAllocs != wantAllocs {
+		t.Errorf("wanted %d allocs, got %d", wantAllocs, gotAllocs)
+	}
+
+	for i := 10; i < 14; i++ {
+		m1.set(t, i, i)
+		validateRefV3(t, m1, m2)
+	}
+
+	m1.set(t, 10, 100)
+	validateRefV3(t, m1, m2)
+
+	m1.remove(t, 12)
+	validateRefV3(t, m1, m2)
+
+	m2.set(t, 4, 4)
+	validateRefV3(t, m1, m2)
+	m2.set(t, 5, 5)
+	validateRefV3(t, m1, m2)
+
+	m1.destroy()
+
+	assertSameMap(t, entrySet(deletedEntries), map[mapEntry]struct{}{
+		{key: 2, value: 2}:    {},
+		{key: 6, value: 60}:   {},
+		{key: 8, value: 8}:    {},
+		{key: 10, value: 10}:  {},
+		{key: 10, value: 100}: {},
+		{key: 11, value: 11}:  {},
+		{key: 12, value: 12}:  {},
+		{key: 13, value: 13}:  {},
+	})
+
+	m2.set(t, 7, 7)
+	validateRefV3(t, m2)
+
+	m2.destroy()
+
+	assertSameMap(t, entrySet(seenEntries), entrySet(deletedEntries))
+}
+
+func toArray(m *PersistentHAMT[int, int]) []int {
+	var result []int
+	m.Range(func(k int, v int) bool {
+		result = append(result, k)
+		return false
+	})
+	return result
+}
+
+func TestRandomMap(t *testing.T) {
+	deletedEntries := make(map[mapEntry]int)
+	seenEntries := make(map[mapEntry]int)
+
+	m := &validatedMap{
+		impl:     NewPersistentHAMT[int, int](newIntHasher()),
+		expected: make(map[int]int),
+		deleted:  deletedEntries,
+		seen:     seenEntries,
+	}
+
+	keys := make([]int, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		key := rand.Intn(10000)
+		m.set(t, key, key)
+		keys = append(keys, key)
+
+		if i%10 == 1 {
+			index := rand.Intn(len(keys))
+			last := len(keys) - 1
+			key = keys[index]
+			keys[index], keys[last] = keys[last], keys[index]
+			keys = keys[:last]
+			m.remove(t, key)
+
+		}
+	}
+
+	m.destroy()
+	assertSameMap(t, entrySet(seenEntries), entrySet(deletedEntries))
 }
 
 func dumpMap(t *testing.T, prefix string, n *mapNode[int, int]) {
@@ -466,7 +555,6 @@ func dumpMap(t *testing.T, prefix string, n *mapNode[int, int]) {
 		return
 	}
 	//t.Logf("%s {key: %v, value: %v (ref: %v), ref: %v, weight: %v}", prefix, n.key, n.value.value, n.value.refCount, n.refCount)
-	fmt.Println(n.contentArray)
 	for i := 0; i < len(n.contentArray)/2; i++ {
 		recordIdx := width * i
 		nodeIdx := width*i + 1
@@ -491,25 +579,85 @@ func entrySet(m map[mapEntry]int) map[mapEntry]struct{} {
 	return set
 }
 
-func validateRef(t *testing.T, maps ...*validatedMap) {
+//
+//func validateRef(t *testing.T, maps ...*validatedMap) {
+//	t.Helper()
+//
+//	actualCountByEntry := make(map[mapEntry]int32)
+//	nodesByEntry := make(map[mapEntry]map[*mapNode[int, int]]struct{})
+//	expectedCountByEntry := make(map[mapEntry]int32)
+//	for i, m := range maps {
+//		dfsRefV2(m.impl.root, actualCountByEntry, nodesByEntry, 1)
+//		dumpMap(t, fmt.Sprintf("%d: root ->", i), m.impl.root)
+//	}
+//	for entry, nodes := range nodesByEntry {
+//		expectedCountByEntry[entry] = int32(len(nodes))
+//	}
+//	assertSameMap(t, expectedCountByEntry, actualCountByEntry)
+//}
+//
+//func dfsRefV2(node *mapNode[int, int], countByEntry map[mapEntry]int32, nodesByEntry map[mapEntry]map[*mapNode[int, int]]struct{}, trueCount int32) {
+//	if node == nil {
+//		return
+//	}
+//
+//	if count := atomic.LoadInt32(&node.refCount); count > 1 {
+//		trueCount += count - 1
+//	}
+//
+//	for i := 0; i < len(node.contentArray)/2; i++ {
+//		recordIdx := width * i
+//		nodeIdx := width*i + 1
+//
+//		if node.contentArray[recordIdx] != nil {
+//			r := (*record[int, int])(node.contentArray[recordIdx])
+//			entry := mapEntry{key: r.key, value: r.value}
+//
+//			count := atomic.LoadInt32(&r.refCount)
+//			countByEntry[entry] = trueCount + count - 1
+//
+//			nodes, ok := nodesByEntry[entry]
+//			if !ok {
+//				nodes = make(map[*mapNode[int, int]]struct{})
+//				nodesByEntry[entry] = nodes
+//			}
+//			nodes[node] = struct{}{}
+//			//if count := atomic.LoadInt32(&r.refCount); count > 1 {
+//			//	countByEntry[entry] = trueCount + count - 1
+//			//} else {
+//			//	countByEntry[entry] = trueCount
+//			//}
+//
+//		}
+//		if node.contentArray[nodeIdx] != nil {
+//			dfsRefV2((*mapNode[int, int])(node.contentArray[nodeIdx]), countByEntry, nodesByEntry, trueCount)
+//		}
+//
+//	}
+//
+//}
+
+func validateRefV3(t *testing.T, maps ...*validatedMap) {
 	t.Helper()
 
-	actualCountByEntry := make(map[mapEntry]int32)
-	nodesByEntry := make(map[mapEntry]map[*mapNode[int, int]]struct{})
+	actualRefByEntry := make(map[mapEntry]map[*PersistentHAMT[int, int]]struct{})
+	assumingCountByEntry := make(map[mapEntry]int32)
+
 	expectedCountByEntry := make(map[mapEntry]int32)
 	for i, m := range maps {
-		fmt.Println("validateRef", i)
-		count := atomic.LoadInt32(&m.impl.root.refCount)
-		dfsRefV2(m.impl.root, actualCountByEntry, nodesByEntry, count)
+		//count := atomic.LoadInt32(&m.impl.root.refCount)
+
+		dfsRefV3(m.impl, m.impl.root, assumingCountByEntry, actualRefByEntry, 1)
 		dumpMap(t, fmt.Sprintf("%d: root ->", i), m.impl.root)
 	}
-	for entry, nodes := range nodesByEntry {
-		expectedCountByEntry[entry] = int32(len(nodes))
+
+	for entry, ref := range actualRefByEntry {
+		expectedCountByEntry[entry] = int32(len(ref))
 	}
-	assertSameMap(t, expectedCountByEntry, actualCountByEntry)
+	assertSameMap(t, expectedCountByEntry, assumingCountByEntry)
 }
 
-func dfsRefV2(node *mapNode[int, int], countByEntry map[mapEntry]int32, nodesByEntry map[mapEntry]map[*mapNode[int, int]]struct{}, trueCount int32) {
+func dfsRefV3(hmap *PersistentHAMT[int, int], node *mapNode[int, int], assumingCountByEntry map[mapEntry]int32, actualRefByEntry map[mapEntry]map[*PersistentHAMT[int, int]]struct{}, trueCount int32) {
 	if node == nil {
 		return
 	}
@@ -525,26 +673,21 @@ func dfsRefV2(node *mapNode[int, int], countByEntry map[mapEntry]int32, nodesByE
 		if node.contentArray[recordIdx] != nil {
 			r := (*record[int, int])(node.contentArray[recordIdx])
 			entry := mapEntry{key: r.key, value: r.value}
+
 			count := atomic.LoadInt32(&r.refCount)
+			assumingCountByEntry[entry] = trueCount + count - 1
 
-			countByEntry[entry] = trueCount + count - 1
-
-			nodes, ok := nodesByEntry[entry]
+			refs, ok := actualRefByEntry[entry]
 			if !ok {
-				nodes = make(map[*mapNode[int, int]]struct{})
-				nodesByEntry[entry] = nodes
+				refs = make(map[*PersistentHAMT[int, int]]struct{})
+				actualRefByEntry[entry] = refs
 			}
-			nodes[node] = struct{}{}
-			//if count := atomic.LoadInt32(&r.refCount); count > 1 {
-			//	countByEntry[entry] = trueCount + count - 1
-			//} else {
-			//	countByEntry[entry] = trueCount
-			//}
+			refs[hmap] = struct{}{}
 
 		}
-
+		//fmt.Println("node by entry sir: ", actualRefByEntry)
 		if node.contentArray[nodeIdx] != nil {
-			dfsRefV2((*mapNode[int, int])(node.contentArray[nodeIdx]), countByEntry, nodesByEntry, trueCount)
+			dfsRefV3(hmap, (*mapNode[int, int])(node.contentArray[nodeIdx]), assumingCountByEntry, actualRefByEntry, trueCount)
 		}
 
 	}
@@ -558,7 +701,6 @@ func (vm *validatedMap) set(t *testing.T, key int, value int) {
 	vm.seen[entry] = vm.clock
 
 	vm.impl.Put(key, value, func(deletedKey int, deletedValue int) {
-		fmt.Println("Yes yes yes, Release", deletedKey, deletedValue)
 		if deletedKey != key || deletedValue != value {
 			t.Fatalf("unexpected passed in deleted entry: %v/%v, expected: %v/%v", deletedKey, deletedValue, key, value)
 		}
