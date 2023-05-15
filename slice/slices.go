@@ -113,6 +113,19 @@ func Push[S ~[]E, E any](s S, v ...E) S {
 
 }
 
+func PushExtend[S ~[]E, E any](s S, v ...E) S {
+
+	c := cap(s)
+
+	if c < len(s)+len(v) {
+		c = len(s) + len(v)
+	}
+	s1 := make([]E, c)
+	copy(s1, s)
+	return append(s1, v...)
+
+}
+
 // PushFront creates a new slice that duplicates `s` and then prepends values v... to the beginning of the new slice.
 // In the returned slice r, the values v... are in the range [0, len(v)), so r[0] == v[0] and r[len(v)-1] == v[len(v)-1].
 // Prepend is equivalent to Insert(s, 0, v...).
