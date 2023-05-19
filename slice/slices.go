@@ -11,12 +11,21 @@ func Set[S ~[]E, E any](s S, i int, v E) S {
 	return s2
 }
 
-// Copy is smiliar to `copy` but returns a new slice instead of modifying the destination slice.
+// Copy is similar to `copy` but returns a new slice instead of modifying the destination slice.
 func Copy[S ~[]E, E any](dst, src S, i int) S {
 
 	s2 := make([]E, len(dst))
 	copy(s2, dst)
 	copy(s2[i:], src)
+	return s2
+}
+
+func SelectRange[S ~[]E, E any](s S, from, to int) S {
+
+	_ = s[from:to] // bounds check
+
+	s2 := make([]E, len(s[from:to]))
+	copy(s2, s[from:to])
 	return s2
 }
 
@@ -325,6 +334,20 @@ func Map[S ~[]E, E any, T any](s S, f func(i int, e E) T) []T {
 	}
 
 	s2 := make([]T, len(s))
+	for i, v := range s {
+		s2[i] = f(i, v)
+	}
+	return s2
+
+}
+
+func Apply[S ~[]E, E any](s S, f func(i int, e E) E) []E {
+
+	if len(s) == 0 || f == nil {
+		return make([]E, 0)
+	}
+
+	s2 := make([]E, len(s))
 	for i, v := range s {
 		s2[i] = f(i, v)
 	}
