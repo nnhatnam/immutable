@@ -1,6 +1,8 @@
 package RRBTree
 
-import "github.com/nnhatnam/immutable/slice"
+import (
+	"github.com/nnhatnam/immutable/slice"
+)
 
 type refValue[V any] struct {
 	value V
@@ -41,8 +43,12 @@ func (n *node[V]) isBalancedNode() bool {
 	return n.sizes == nil
 }
 
+func (n *node[V]) reachedMaxBranch() bool {
+	return len(n.children) == maxBranches
+}
+
 // caller must not modify the returned slice.
-func (n *node[V]) getSizes(h int) []int {
+func (n *node[V]) getSizeTable(h int) []int {
 	if n.sizes != nil {
 		return n.sizes
 	}
@@ -135,73 +141,238 @@ func NewRRBTree[V any]() RRBTree[V] {
 //
 //}
 
+//func pushTailOnBalancedBranch[V any](n node[V], h int, index int, tail []*refValue[V]) (*node[V], int) {
+//	if h == 0 {
+//		if len(n.values) == 0 {
+//			return &node[V]{
+//				values: tail,
+//			}, 0
+//		}
+//
+//		sibling := node[V]{
+//			values: tail,
+//		}
+//
+//		return &node[V]{
+//			children: []*node[V]{&n, &sibling},
+//		}, 1
+//	}
+//
+//	//var slot int // the slot to insert the new child
+//	//slot, index = navigate[V](&n, h, index)
+//	if index >= (1 << ((h + 1) * mFactor)) {
+//		if h == 7 {
+//			panic("index out of bound")
+//		}
+//		parent := &node[V]{
+//			children: []*node[V]{&n, nil /*sibling*/},
+//		}
+//		parent.children[1], _ = pushTailOnBalancedBranch(node[V]{}, h, 0, tail)
+//		return parent, h + 1
+//	}
+//
+//	//var slot int // the slot to insert the new child
+//	_, index = navigate[V](&n, h, index)
+//
+//	child, _ := pushTail(node[V]{}, h-1, index, tail)
+//	n.children = slice.Push(n.children, child)
+//	return &n, h
+//}
+
+//func checkSubTreePushable[V any](n *node[V], h int) bool {
+//	if h == 1 {
+//		if len(n.children) == maxBranches {
+//			return false
+//		}
+//		return true
+//	}
+//
+//	return checkSubTreePushable(n.children[len(n.children)-1], h-1)
+//}
+
+func walkFirstBranch[V any](n node[V], h int, nodes []*node[V]) {
+	nodes[h] = &n
+	if h != 0 {
+		walkFirstBranch(*n.children[0], h-1, nodes)
+	}
+	return
+
+}
+
+func walkLastBranch[V any](n node[V], h int, nodes []*node[V]) {
+	nodes[h] = &n
+	if h != 0 {
+		walkLastBranch(*n.children[len(n.children)-1], h-1, nodes)
+	}
+	return
+}
+
+//func pushHead[V any](n node[V], h int, index int, head []*refValue[V]) (*node[V], int) {
+//
+//	nodes := make([]*node[V], h+1)
+//	walkLastBranch(n, h, nodes)
+//
+//
+//}
+//
+//func pushTail1[V any](n node[V], h int, position int, tail []*refValue[V]) (*node[V], int) {
+//
+//	if h == 0 {
+//		if len(n.values) == 0 {
+//			return &node[V]{
+//				values: tail,
+//			}, h
+//		}
+//
+//		sibling := node[V]{
+//			values: tail,
+//		}
+//
+//		parent := &node[V]{
+//			children: []*node[V]{&n, &sibling},
+//		}
+//
+//		if len(n.values) != maxBranches {
+//			//build sizes table
+//			parent.sizes = []int{len(n.values), len(n.values) + len(sibling.values)}
+//
+//		}
+//
+//		return parent, h + 1
+//
+//	}
+//
+//	if n.isBalancedNode() {
+//
+//		//position := t.size - len(t.tail)
+//
+//		var slot int // the slot to insert the tail
+//		slot, position = navigate[V](&n, h, position)
+//
+//		//index := (position >> shiftTable[0]) & maskTable[0]
+//		//position = position & maskTable[1]
+//
+//		if slot > len(n.children) {
+//			//push
+//			if len(n.children) == maxBranches {
+//
+//				parent, _ := pushTail(node[V]{
+//					children: []*node[V]{&n},
+//				}, h+1, position, tail)
+//
+//				return parent, h + 1
+//			}
+//
+//			child, _ := pushTail(node[V]{}, h-1, position, tail)
+//			n.children = slice.Push(n.children, child)
+//		}
+//
+//		n.children[position], _ = pushTail(*n.children[position], h-1, position, tail)
+//		return &n, h
+//	}
+//
+//	index := findPosition(n.sizes, position)
+//	position = position - n.sizes[index-1]
+//
+//	if index > len(n.children) {
+//		//push
+//		if len(n.children) == maxBranches {
+//
+//			parent, _ := pushTail(node[V]{
+//				children: []*node[V]{&n},
+//			}, h+1, position, tail)
+//
+//			return parent, h + 1
+//		}
+//
+//		child, _ := pushTail(node[V]{}, h-1, index, tail)
+//		n.children = slice.Push(n.children, child)
+//	}
+//
+//	//index -= n.sizes[position-1]
+//
+//	if len(n.children) == maxBranches {
+//
+//		parent, _ := pushTail(node[V]{
+//			children: []*node[V]{&n},
+//		}, h+1, position, tail)
+//
+//		return parent, h + 1
+//	}
+//
+//	n.children[position], _ = pushTail(*n.children[position], h-1, index, tail)
+//	return &n, h
+//
+//}
+
+func pushTail[V any](n node[V], h int, tail []*refValue[V]) (*node[V], int) {
+
+	nodes := make([]*node[V], h+1)
+	walkLastBranch(n, h, nodes)
+
+	var i int
+	nodes[0] = &node[V]{
+		values: tail,
+	}
+
+	isBalance := len(tail) == maxBranches
+
+	// find the deepest node (except leaf) that has less than maxBranches children, where we can push the new branch.
+	for i = 1; i <= h; i++ {
+		if len(nodes[i].children) < maxBranches {
+			//found the node
+			if !isBalance || !nodes[i].isBalancedNode() {
+				sizes := nodes[i].getSizeTable(i) // get the sizes table of the node
+				idx := len(sizes) - 1
+				sizes = slice.Push(sizes, sizes[idx]+len(tail)) // push the new cumulative size to the sizes table
+
+			}
+
+			nodes[i].children = slice.Push(nodes[i].children, nodes[i-1]) // push the new node to the children of the current node
+			break
+		}
+
+		// node is full, we can't push the new node into it. We must create a new branch.
+		nodes[i] = &node[V]{
+			children: []*node[V]{nodes[i-1]},
+		}
+	}
+
+	if i > h {
+		// all nodes are full, we must create a new root
+		// i > h in case h == 0
+		parent := &node[V]{
+			children: []*node[V]{&n, nodes[i-1]},
+		}
+
+		if !n.isBalancedNode() {
+			sizes := n.getSizeTable(h)
+			idx := len(sizes) - 1
+			parent.sizes = slice.Push(sizes, sizes[idx]+len(tail))
+		}
+		return parent, h + 1
+	}
+
+	// update the remaining nodes up to the root.
+	for i = i + 1; i <= h; i++ {
+		idx := len(nodes[i].children) - 1
+		nodes[i].children = slice.Set(nodes[i].children, idx, nodes[i-1])
+
+		if !nodes[i].isBalancedNode() || !nodes[i-1].isBalancedNode() {
+			sizes := nodes[i].getSizeTable(i)
+			idx = len(sizes) - 1
+			sizes = slice.Push(sizes, sizes[idx]+len(tail))
+		}
+	}
+
+	return nodes[h], h
+
+}
+
 // https://github.com/golang/go/wiki/CodeReviewComments#receiver-type
 // pass node as value to make sure it is always shallow copied.
 // caller must make sure that n is not nil or lese it will panic with nil pointer dereference.
 // it is very useful for persistent data structure.
-func (t RRBTree[V]) pushTail(n node[V], h int, index int, tail []*refValue[V]) *node[V] {
-
-	if h == 0 {
-
-		return &node[V]{
-			values: tail,
-		}
-	}
-
-	if n.isBalancedNode() {
-		position := t.size - len(t.tail)
-		position = (position >> shiftTable[h]) & maskTable[h]
-
-		if position > len(n.children) {
-			//push
-			if len(n.children) == maxBranches {
-
-				parent := t.pushTail(node[V]{
-					children: []*node[V]{&n},
-				}, h+1, index, tail)
-
-				return parent
-			}
-
-			n.children = slice.Push(n.children, t.pushTail(node[V]{}, h-1, index, tail))
-		}
-
-		n.children[position] = t.pushTail(*n.children[position], h-1, index, tail)
-		return &n
-	}
-
-	position := findPosition(n.sizes, index)
-
-	if position > len(n.children) {
-		//push
-		if len(n.children) == maxBranches {
-
-			parent := t.pushTail(node[V]{
-				children: []*node[V]{&n},
-			}, h+1, index, tail)
-
-			return parent
-		}
-
-		n.children = slice.Push(n.children, t.pushTail(node[V]{}, h-1, index, tail))
-	}
-
-	index -= n.sizes[position-1]
-
-	if len(n.children) == maxBranches {
-
-		parent := t.pushTail(node[V]{
-			children: []*node[V]{&n},
-		}, h+1, index, tail)
-
-		return parent
-	}
-
-	n.children[position] = t.pushTail(*n.children[position], h-1, index, tail)
-	return &n
-
-}
-
 func (t RRBTree[V]) push(value V) RRBTree[V] {
 	// Value receiver makes a copy of the type and pass it to the function.
 	// The function stack now holds an equal object but at a different location on memory.
@@ -217,7 +388,16 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 
 	if len(t.tail) == maxBranches {
 		// make a new branch
-		t.root = t.pushTail(*t.root, t.h, t.size-len(t.tail), t.tail)
+
+		if t.root == nil {
+			t.root = &node[V]{
+				values: t.tail,
+			}
+			t.tail = nil
+			return t
+		}
+
+		t.root, t.h = pushTail(*t.root, t.h, t.tail)
 		t.tail = nil
 	}
 
@@ -445,26 +625,13 @@ func calcIndex(sizes []int, slot, idx int) int {
 	return i
 }
 
-func cloneLastBranch[V any](n node[V], h int, nodes []*node[V]) {
-
-	nodes[h-1] = &n
-	cloneLastBranch(*n.children[len(n.children)-1], h-1, nodes)
-
-}
-
-func walkLastBranch[V any](n *node[V], h int, nodes []*node[V]) {
-
-	nodes[h-1] = n
-	walkLastBranch(n.children[len(n.children)-1], h-1, nodes)
-
-}
-
-func walkFirstBranch[V any](n *node[V], h int, nodes []*node[V]) {
-
-	nodes[h-1] = n
-	walkFirstBranch(n.children[0], h-1, nodes)
-
-}
+//
+//func walkFirstBranch[V any](n *node[V], h int, nodes []*node[V]) {
+//
+//	nodes[h-1] = n
+//	walkFirstBranch(n.children[0], h-1, nodes)
+//
+//}
 
 func cloneFirstBranch[V any](n node[V], h int, nodes []*node[V]) {
 
@@ -486,8 +653,8 @@ func redistributed[V any](left, right node[V], h int) (newL *node[V], newR *node
 
 		i := len(left.children)
 		mergedSizes := make([]int, tot)
-		copy(mergedSizes, left.getSizes(h))
-		copy(mergedSizes[i:], right.getSizes(h))
+		copy(mergedSizes, left.getSizeTable(h))
+		copy(mergedSizes[i:], right.getSizeTable(h))
 
 		for j := i; j < len(mergedSizes); j++ {
 			mergedSizes[j] += mergedSizes[i-1]
@@ -502,8 +669,8 @@ func redistributed[V any](left, right node[V], h int) (newL *node[V], newR *node
 
 	// merge into two nodes
 
-	ls := left.getSizes(h)
-	rs := right.getSizes(h)
+	ls := left.getSizeTable(h)
+	rs := right.getSizeTable(h)
 
 	i := len(left.children)
 	j := maxBranches - i
@@ -565,7 +732,7 @@ func merge[V any](left node[V], right node[V], h int) (newL, newR *node[V]) {
 		if !right.isBalancedNode() {
 			right.sizes = slice.Apply(right.sizes[shiftedCount:], func(i, e int) int { return e - right.sizes[shiftedCount-1] })
 		} else {
-			right.sizes = slice.SelectRange(right.getSizes(h), shiftedCount, len(right.children))
+			right.sizes = slice.SelectRange(right.getSizeTable(h), shiftedCount, len(right.children))
 		}
 
 		right.children = slice.SelectRange(right.children, shiftedCount, len(right.children))
@@ -618,13 +785,13 @@ func mergeLeaf[V any](left node[V], right node[V]) (mergedRoot *node[V]) {
 func (t RRBTree[V]) concatenate(other RRBTree[V]) {
 	if other.root == nil {
 		t.tail = slice.Concat(t.tail, other.tail)
-		index := t.size - len(t.tail)
+		//index := t.size - len(t.tail)
 
 		if len(t.tail) > maxBranches {
 			tail := slice.SelectRange(t.tail, 0, maxBranches)
 			t.tail = slice.SelectRange(t.tail, maxBranches, len(t.tail))
 
-			t.pushTail(*t.root, t.h, index, tail)
+			pushTail(*t.root, t.h, tail)
 		}
 
 		t.size += other.size
@@ -632,21 +799,41 @@ func (t RRBTree[V]) concatenate(other RRBTree[V]) {
 	}
 }
 
+func navigate[V any](node *node[V], h, position int) (idx, nextPos int) {
+
+	if node.isBalancedNode() {
+		idx = (position >> shiftTable[h]) & maskTable[0]
+		//nextPos = position & (1<<shiftTable[h] - 1)
+		return idx, position & (1<<shiftTable[h] - 1)
+	}
+
+	idx = findPosition(node.sizes, position)
+	nextPos = position - node.sizes[idx]
+	return
+}
+
 func get[V any](t *RRBTree[V], i int) V {
-	if i > t.size {
+	if i > t.size || i < 0 {
 		panic("Index out of bounds")
 	}
+
+	idx := t.size - len(t.tail)
+
+	if i >= idx {
+		return t.tail[i-idx].value
+	}
+
+	if len(t.head) > 0 && i < len(t.head) {
+		return t.head[i].value
+	}
+
 	n := t.root
-
-	for j := t.h; j > 0; i-- {
-
-		idx := (i >> shiftTable[j]) & maskTable[j]
-		if n.sizes != nil {
-			idx = findPosition(n.sizes, i)
-			i -= n.sizes[j-1]
-		}
-		n = n.children[idx]
-		j--
+	h := t.h
+	var slot int
+	for h > 0 {
+		slot, i = navigate(n, h, i)
+		n = n.children[slot]
+		h--
 	}
 
 	return n.values[i].value
@@ -654,27 +841,15 @@ func get[V any](t *RRBTree[V], i int) V {
 
 func (t RRBTree[V]) Get(i int) V {
 
-	if i > t.size {
-		panic("Index out of bounds")
-	}
-	n := t.root
-
-	for j := t.h; j > 0; i-- {
-
-		idx := (i >> shiftTable[j]) & maskTable[j]
-		if n.sizes != nil {
-			idx = findPosition(n.sizes, i)
-			i -= n.sizes[j-1]
-		}
-		n = n.children[idx]
-		j--
-	}
-
-	return n.values[i].value
+	return get(&t, i)
 
 }
 
-func (t RRBTree[V]) Size() int {
+func (t RRBTree[V]) Len() int {
 
 	return t.size
+}
+
+func (t RRBTree[V]) Append(value V) RRBTree[V] {
+	return t.push(value)
 }
