@@ -21,9 +21,10 @@ var cumulativeSumTable = [7][32]int{}
 func buildCumulativeSum() {
 
 	for i := 0; i <= maxHeight; i++ {
-		//cumulativeSumTable[i] = (1 << i) ^ 32
+		//( 2 ^ (2m))
+		//cumulativeSumTable[i] = (1 << i)
 		for j := 0; j < 32; j++ {
-			cumulativeSumTable[i][j] = (1 << ((i + 1) * mFactor)) * (j + 1)
+			cumulativeSumTable[i][j] = (1 << (i * mFactor)) * (j + 1)
 		}
 	}
 }

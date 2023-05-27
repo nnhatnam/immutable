@@ -40,7 +40,7 @@ type node[V any] struct {
 //}
 
 func (n *node[V]) isBalancedNode() bool {
-	return n.sizes == nil
+	return len(n.sizes) == 0
 }
 
 func (n *node[V]) reachedMaxBranch() bool {
@@ -49,16 +49,15 @@ func (n *node[V]) reachedMaxBranch() bool {
 
 // caller must not modify the returned slice.
 func (n *node[V]) getSizeTable(h int) []int {
-	if n.sizes != nil {
+	if len(n.sizes) != 0 {
 		return n.sizes
 	}
-
 	return cumulativeSumTable[h][:len(n.children)]
 
 }
 
 func (n *node[V]) getLength(h int) int {
-	if n.sizes != nil {
+	if len(n.sizes) != 0 {
 		return n.sizes[len(n.sizes)-1]
 	}
 
@@ -405,47 +404,74 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 
 }
 
-func (t RRBTree[V]) popLast(n node[V], h int) (n1 *node[V], value *refValue[V], tail []*refValue[V]) {
+func pop[V any](n node[V], h int) (n1 *node[V], value *refValue[V], tail []*refValue[V], _ int) {
 
-	if h == 0 {
-		n.values, value = slice.Pop(n.values)
+	nodes := make([]*node[V], h+1)
+	walkLastBranch(n, h, nodes)
 
-		if len(n.values) < minBranches {
-			tail = n.values
-			return nil, value, n.values
+	var i int
+	var values []*refValue[V]
+	isNil := false
+	isBalance := true
 
+	values, value = slice.Pop(nodes[0].values)
+
+	if len(values) < maxBranches {
+		tail = values
+		nodes[0] = nil
+		isNil = true
+
+	} else {
+
+		nodes[0] = &node[V]{
+			values: values,
 		}
-		return &n, value, nil
+		isBalance = false
 	}
 
-	n1, value, tail = t.popLast(*n.children[len(n.children)-1], h-1)
+	for i = 1; i <= h; i++ {
+		idx := len(nodes[i].children) - 1
+		if isNil {
+			nodes[i].children, _ = slice.Pop(nodes[i].children)
 
-	if n1 == nil {
-		n.children, _ = slice.Pop(n.children)
-		return &n, value, tail
+			if !nodes[i].isBalancedNode() {
+				nodes[i].sizes, _ = slice.Pop(nodes[i].sizes)
+			}
+
+			if len(nodes[i].children) > 0 {
+				isNil = false
+			} else {
+				nodes[i] = nil
+			}
+			continue
+
+		} else if !isBalance || !nodes[i].isBalancedNode() {
+			sizes := nodes[i].getSizeTable(i)
+			last := len(sizes) - 1
+			sizes = slice.Set(sizes, last, sizes[last]-1)
+			nodes[i].sizes = sizes
+			isBalance = false
+		}
+
+		nodes[i].children = slice.Set(nodes[i].children, idx, nodes[i-1])
+
 	}
 
-	n.children = slice.Set(n.children, len(n.children)-1, n1)
-	return &n, value, tail
-
-}
-
-func (t RRBTree[V]) pop() (rrb *RRBTree[V], value *refValue[V], success bool) {
-
-	if t.size == 0 {
-		return
+	n1 = nodes[h]
+	for h > 1 {
+		if len(n1.children) > 1 {
+			break
+		}
+		n1 = n1.children[0]
+		h--
 	}
 
-	if len(t.tail) > 0 {
-		t.tail, value = slice.Pop(t.tail)
-		t.size--
-		return &t, value, true
+	if h == 1 && len(n1.children) == 1 {
+		return n1.children[0], value, tail, 0
 	}
 
-	//case: empty tail
-	t.root, value, t.tail = t.popLast(*t.root, t.h)
+	return n1, value, tail, h
 
-	return &t, value, true
 }
 
 // leftSlice doesn't include the index
@@ -598,15 +624,6 @@ func (t RRBTree[V]) split(i int) (_ RRBTree[V], _ RRBTree[V]) {
 
 }
 
-//func (t RRBTree[V]) findLastNode() *node[V] {
-//
-//	n := t.root // start from root
-//	for j := t.h; j > 0; j-- {
-//		n = n.children[len(n.children)-1]
-//	}
-//	return n
-//}
-
 func findPosition(sizes []int, idx int) int {
 	i := 0
 	for i < len(sizes) && sizes[i] <= idx {
@@ -624,14 +641,6 @@ func calcIndex(sizes []int, slot, idx int) int {
 
 	return i
 }
-
-//
-//func walkFirstBranch[V any](n *node[V], h int, nodes []*node[V]) {
-//
-//	nodes[h-1] = n
-//	walkFirstBranch(n.children[0], h-1, nodes)
-//
-//}
 
 func cloneFirstBranch[V any](n node[V], h int, nodes []*node[V]) {
 
@@ -808,7 +817,11 @@ func navigate[V any](node *node[V], h, position int) (idx, nextPos int) {
 	}
 
 	idx = findPosition(node.sizes, position)
-	nextPos = position - node.sizes[idx]
+	if idx == 0 {
+		nextPos = position
+		return
+	}
+	nextPos = position - node.sizes[idx-1]
 	return
 }
 
@@ -841,7 +854,32 @@ func get[V any](t *RRBTree[V], i int) V {
 
 func (t RRBTree[V]) Get(i int) V {
 
-	return get(&t, i)
+	start := 0 + len(t.head)
+	end := t.size - len(t.tail)
+
+	// [0 : head ) - [start : end) - [tail : size)
+
+	//fmt.Println(t.size, "[0, ", len(t.head), ")", " [", start, " , ", end, ") [", end, t.size, ")", "-->", i)
+	switch {
+	case i < 0 || i >= t.size:
+		panic("Index out of bounds")
+	case i >= end: // look into tail
+		return t.tail[i-end].value
+	case i < start: // look into head
+		return t.head[i].value
+
+	default: // look into root
+		n := t.root
+		h := t.h
+		var slot int
+		for h > 0 {
+			slot, i = navigate(n, h, i)
+			n = n.children[slot]
+			h--
+		}
+		return n.values[i].value
+
+	}
 
 }
 
@@ -852,4 +890,23 @@ func (t RRBTree[V]) Len() int {
 
 func (t RRBTree[V]) Append(value V) RRBTree[V] {
 	return t.push(value)
+}
+
+func (t RRBTree[V]) Pop() (rrb RRBTree[V], value V, ok bool) {
+
+	switch {
+	case t.size == 0:
+		return
+	case len(t.tail) > 0:
+		var v *refValue[V]
+		t.tail, v = slice.Pop(t.tail)
+		t.size--
+		return t, v.value, true
+	default:
+		var v *refValue[V]
+		t.root, v, t.tail, t.h = pop(*t.root, t.h)
+		t.size--
+		return t, v.value, true
+	}
+
 }
