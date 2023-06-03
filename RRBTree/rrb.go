@@ -216,7 +216,7 @@ func pushTail[V any](n *node[V], h int, tail []*refValue[V]) (m *node[V], treeSi
 
 	var child *node[V]
 
-	child, treeSize, isNewBranch, isFull = push(n.children[len(n.children)-1], h-1, tail)
+	child, treeSize, isNewBranch, isFull = pushTail(n.children[len(n.children)-1], h-1, tail)
 
 	if len(n.children) == maxBranches {
 		m = &node[V]{
