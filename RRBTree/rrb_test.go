@@ -202,13 +202,15 @@ func TestSimpleRRBTree(t *testing.T) {
 
 		history := make([]RRBTree[int], 0)
 
-		nums := 1 << 15
+		nums := 1 << 10
 		for i := 0; i < nums; i++ {
 			history = append(history, rrb)
+			//fmt.Println("appending---------------------------------------------------------------------------- ", i)
 			rrb = rrb.Append(i)
+			verifyTree(t, &rrb, rrb.h, false)
 		}
 
-		verifyTree(t, &rrb, rrb.h, false)
+		//verifyTree(t, &rrb, rrb.h, false)
 
 		if rrb.Len() != nums {
 			t.Errorf("Expected rrb length of 33, got %v", rrb.Len())
