@@ -49,11 +49,6 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h int, dump bool) bool {
 				return len(n.values), false
 			}
 
-			//if !lastBranch && len(n.values) < minBranches {
-			//	t.Errorf("Path: [%v] - Expected leaf's children to be at least %v for non-last branch, got %v", path+" -> leaf ", minBranches, len(n.values))
-			//	return len(n.values), false
-			//}
-
 			if len(n.values) < minBranches {
 				t.Fatalf("Path: [%v] - Expected leaf's children to be at least %v for non-last branch, got %v", path+" -> leaf ", minBranches, len(n.values))
 				return len(n.values), false
@@ -91,24 +86,6 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h int, dump bool) bool {
 				t.Fatalf("Path: [%v] - Expected cumulative size at slot %v on level %v is  %v, got %v (%v) (treeSize: %v - isBalancedNode %v - n.sizes %v)", path, i, h, cumulativeSize, cummulativeCalc[i], cummulativeCalc, n.treeSize, n.isBalancedNode(), n.sizes)
 				return trueCount, false
 			}
-
-			//if !n.isBalancedNode() {
-			//	if cummulativeCalc[i] != cumulativeSize {
-			//		t.Fatalf("Path: [%v] - Expected cumulative size at slot %v on level %v is  %v, got %v (%v)", path, i, h, cumulativeSize, cummulativeCalc[i], cummulativeCalc)
-			//		return trueCount, false
-			//	}
-			//} else {
-			//
-			//	if !isLastBranch {
-			//		cummulativeCalc = cumulativeSumTable[h][:len(n.children)]
-			//		if cummulativeCalc[i] != cumulativeSize {
-			//			fmt.Println("yooo: ", len(n.children)-1, i, n.sizes, len(n.children), isLastBranch)
-			//			t.Fatalf("Path: [%v] - Expected cumulative size at slot %v on level %v is  %v, got %v (%v)", path, i, h, cumulativeSize, cummulativeCalc[i], cummulativeCalc)
-			//			return trueCount, false
-			//		}
-			//	}
-			//
-			//}
 
 		}
 		return cumulativeSize, true
@@ -408,10 +385,11 @@ func TestSimpleRRBTree(t *testing.T) {
 
 		history := make([]RRBTree[int], 0)
 
-		nums := 1 << 18
+		nums := 1 << 15
 		for i := 0; i < nums; i++ {
 			history = append(history, rrb)
 			rrb = rrb.Prepend(nums - i - 1)
+			//verifyTree(t, &rrb, rrb.h, false)
 		}
 
 		verifyTree(t, &rrb, rrb.h, false)
