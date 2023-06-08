@@ -71,69 +71,69 @@ func TestSet(t *testing.T) {
 
 }
 
-var copyTests = []struct {
-	s    []int
-	i    int
-	v    []int
-	want []int
-}{
-	{[]int{1, 2, 3}, 0, []int{4, 5, 6}, []int{4, 5, 6}},
-	{[]int{1, 2, 3}, 1, []int{4, 5, 6}, []int{1, 4, 5}},
-	{[]int{1, 2, 3}, 2, []int{4, 5, 6}, []int{1, 2, 4}},
-	{[]int{1, 2, 3}, 3, []int{4, 5, 6}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 0, []int{}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 1, []int{}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 2, []int{}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 3, []int{}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 0, []int{4}, []int{4, 2, 3}},
-	{[]int{1, 2, 3}, 1, []int{4}, []int{1, 4, 3}},
-	{[]int{1, 2, 3}, 2, []int{4}, []int{1, 2, 4}},
-	{[]int{1, 2, 3}, 3, []int{4}, []int{1, 2, 3}},
-	{[]int{1, 2, 3}, 0, []int{4, 5}, []int{4, 5, 3}},
-	{[]int{1, 2, 3}, 1, []int{4, 5}, []int{1, 4, 5}},
-	{[]int{1, 2, 3}, 2, []int{4, 5}, []int{1, 2, 4}},
-	{[]int{1}, 0, []int{4, 5, 6}, []int{4}},
-}
-
-func TestCopy(t *testing.T) {
-
-	for _, test := range copyTests {
-		got := Copy(test.s, test.v, test.i)
-		if !slices.Equal(got, test.want) {
-			t.Errorf("Copy(%v, %v, %v) = %v, want %v", test.s, test.i, test.v, got, test.want)
-		}
-	}
-
-	//panics tests
-	for _, test := range []struct {
-		name string
-		s    []int
-		i    int
-		v    []int
-	}{
-		{"with negative index", []int{42}, -1, []int{10}},
-		{"with out-of-bounds index", []int{42}, 2, []int{10}},
-	} {
-
-		if !panics(func() { Copy(test.s, test.v, test.i) }) {
-			t.Errorf("Override %s: got no panic, want panic", test.name)
-		}
-	}
-
-	// Test number of allocations
-	for _, test := range copyTests {
-
-		allocs := testing.AllocsPerRun(100, func() {
-			_ = Copy(test.s, test.v, test.i)
-		})
-		if len(test.s) > 0 && allocs != 1 {
-			t.Errorf("Copy(%v) allocates %v times, want 1", test.s, allocs)
-		} else if len(test.s) == 0 && allocs != 0 {
-			t.Errorf("Copy(%v) allocates %v times, want 0", test.s, allocs)
-		}
-
-	}
-}
+//var copyTests = []struct {
+//	s    []int
+//	i    int
+//	v    []int
+//	want []int
+//}{
+//	{[]int{1, 2, 3}, 0, []int{4, 5, 6}, []int{4, 5, 6}},
+//	{[]int{1, 2, 3}, 1, []int{4, 5, 6}, []int{1, 4, 5}},
+//	{[]int{1, 2, 3}, 2, []int{4, 5, 6}, []int{1, 2, 4}},
+//	{[]int{1, 2, 3}, 3, []int{4, 5, 6}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 0, []int{}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 1, []int{}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 2, []int{}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 3, []int{}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 0, []int{4}, []int{4, 2, 3}},
+//	{[]int{1, 2, 3}, 1, []int{4}, []int{1, 4, 3}},
+//	{[]int{1, 2, 3}, 2, []int{4}, []int{1, 2, 4}},
+//	{[]int{1, 2, 3}, 3, []int{4}, []int{1, 2, 3}},
+//	{[]int{1, 2, 3}, 0, []int{4, 5}, []int{4, 5, 3}},
+//	{[]int{1, 2, 3}, 1, []int{4, 5}, []int{1, 4, 5}},
+//	{[]int{1, 2, 3}, 2, []int{4, 5}, []int{1, 2, 4}},
+//	{[]int{1}, 0, []int{4, 5, 6}, []int{4}},
+//}
+//
+//func TestCopy(t *testing.T) {
+//
+//	for _, test := range copyTests {
+//		got := Copy(test.s, test.v, test.i)
+//		if !slices.Equal(got, test.want) {
+//			t.Errorf("Copy(%v, %v, %v) = %v, want %v", test.s, test.i, test.v, got, test.want)
+//		}
+//	}
+//
+//	//panics tests
+//	for _, test := range []struct {
+//		name string
+//		s    []int
+//		i    int
+//		v    []int
+//	}{
+//		{"with negative index", []int{42}, -1, []int{10}},
+//		{"with out-of-bounds index", []int{42}, 2, []int{10}},
+//	} {
+//
+//		if !panics(func() { Copy(test.s, test.v, test.i) }) {
+//			t.Errorf("Override %s: got no panic, want panic", test.name)
+//		}
+//	}
+//
+//	// Test number of allocations
+//	for _, test := range copyTests {
+//
+//		allocs := testing.AllocsPerRun(100, func() {
+//			_ = Copy(test.s, test.v, test.i)
+//		})
+//		if len(test.s) > 0 && allocs != 1 {
+//			t.Errorf("Copy(%v) allocates %v times, want 1", test.s, allocs)
+//		} else if len(test.s) == 0 && allocs != 0 {
+//			t.Errorf("Copy(%v) allocates %v times, want 0", test.s, allocs)
+//		}
+//
+//	}
+//}
 
 var updateTests = []struct {
 	s    []int

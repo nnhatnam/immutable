@@ -470,7 +470,6 @@ func (t RRBTree[V]) prepend(value V) RRBTree[V] {
 
 		}
 
-		//t.root, t.h = pushTail(*t.root, t.h, t.tail)
 		t.head = nil
 	}
 
@@ -520,52 +519,155 @@ func popBack[V any](n *node[V], h int) (m *node[V], value *refValue[V], tail []*
 	return setLastChildOnNode(n, child), value, tail
 }
 
-func lessOrEqual[V any](root *node[V], h int, index int) (left *node[V], tail []*refValue[V], treeSize int) {
+func greaterOrEqual[V any](root *node[V], h int, index int) (head []*refValue[V], right *node[V]) {
 	if h == 0 {
-		values := slice.SelectRange(root.values, 0, index+1)
+		head = slice.Copy(root.values[index:])
 
-		if len(values) < minBranches {
-			return nil, values, 0
+		if len(head) < maxBranches {
+			return
+		} else if len(head) > maxBranches {
+			idx := len(head) - maxBranches
+			return head[:idx], createLeaf(head[idx:])
 		}
 
-		return &node[V]{
-			values: values,
-		}, nil, len(values)
+		return nil, createLeaf(head)
 	}
 
 	//nodes[h]
 	var slot int
 	var child *node[V]
 
-	left = root.shallowClone()
 	slot, index = navigate(root, h, index)
 
-	child, tail, treeSize = lessOrEqual(root.children[slot], h-1, index)
+	head, child = greaterOrEqual(root.children[slot], h-1, index)
+
+	right = root.shallowClone()
 
 	if child == nil {
-		left.children = slice.SelectRange(root.children, 0, slot)
-
-		if len(left.children) == 0 {
-			return nil, tail, 0
+		if slot == len(right.children)-1 {
+			return head, nil
 		}
 
-		if !left.isBalancedNode() {
-			left.sizes = slice.SelectRange(root.sizes, 0, slot)
+		right.children = slice.Slice(right.children, slot+1, len(right.children))
+
+		if !right.isBalancedNode() {
+
+			diff := root.sizes[slot]
+			right.sizes = slice.Slice(right.sizes, slot+1, len(right.sizes))
+			right.sizes[len(right.sizes)-1] = right.treeSize
+			right.treeSize -= diff
+
+			for i := 0; i < len(right.sizes); i++ {
+				right.sizes[i] -= diff
+			}
+
+		} else {
+			diff := cumulativeSumTable[h][slot]
+			right.treeSize -= diff
 		}
 
-		return left, tail, treeSize
+		return head, right
+
 	}
 
-	left.children = slice.SelectRange(root.children, 0, slot+1)
+	if slot == 0 {
+		return head, setFirstChildOnNode(right, child)
+	}
+
+	right.children = slice.Slice(right.children, slot, len(right.children))
+	right.children[0] = child
+
+	if !right.isBalancedNode() {
+		offset := child.treeSize - root.sizes[slot]
+		right.sizes = slice.Slice(right.sizes, slot, len(right.sizes))
+		for i := 0; i < len(right.sizes); i++ {
+			right.sizes[i] += offset
+		}
+		right.treeSize = right.sizes[len(right.sizes)-1]
+
+	} else {
+
+		if child.treeSize != cumulativeSumTable[h][0] {
+
+			slotSize := cumulativeSumTable[h][slot]
+			right.sizes = slice.Copy(cumulativeSumTable[h][slot : len(right.sizes)+slot])
+			offset := child.treeSize - slotSize
+
+			for i := 0; i < len(right.sizes); i++ {
+				right.sizes[i] += offset
+			}
+
+			right.treeSize = cumulativeSumTable[h][slot]
+
+		}
+
+	}
+	return head, right
+
+}
+
+func lessOrEqual[V any](root *node[V], h int, index int) (left *node[V], tail []*refValue[V]) {
+	if h == 0 {
+
+		// consider to implement a case where we don't need to duplicate the slice whe it doesn't change the underlying array
+		if index == root.treeSize-1 {
+			return root, nil
+		}
+
+		tail = slice.Copy(root.values[:index+1])
+		if len(tail) < maxBranches {
+			return
+		} else if len(tail) > maxBranches {
+			return createLeaf(tail[:maxBranches]), tail[maxBranches:]
+		}
+
+		return createLeaf(tail), nil
+
+	}
+
+	//nodes[h]
+	var slot int
+	var child *node[V]
+
+	slot, index = navigate(root, h, index)
+
+	child, tail = lessOrEqual(root.children[slot], h-1, index)
+
+	left = root.shallowClone()
+
+	if child == nil {
+		if slot == 0 {
+			return nil, tail
+		}
+
+		left.children = slice.Slice(left.children, 0, slot)
+
+		if !left.isBalancedNode() {
+			left.sizes = slice.Slice(left.sizes, 0, slot)
+			left.treeSize = left.sizes[slot-1]
+		} else {
+			left.treeSize = cumulativeSumTable[h][slot-1]
+		}
+
+		return left, tail
+
+	}
+
+	if slot == len(left.children)-1 {
+		return setLastChildOnNode(left, child), tail
+	}
+
+	left.children = slice.Slice(left.children, 0, slot+1)
 	left.children[slot] = child
 
 	if !left.isBalancedNode() {
-		treeSize += left.sizes[slot-1]
-		left.sizes = slice.SelectRange(root.sizes, 0, slot+1)
-		left.sizes[slot] = treeSize
+		left.sizes = slice.Slice(left.sizes, 0, slot+1)
+		left.treeSize = left.sizes[slot]
+	} else {
+		left.treeSize = cumulativeSumTable[h][slot]
 	}
+	return left, tail
 
-	return left, tail, treeSize
 }
 
 // leftSlice doesn't include the index
@@ -573,7 +675,7 @@ func leftSlice[V any](n node[V], h int, index int) (left *node[V], tail []*refVa
 
 	if h == 0 {
 
-		values := slice.SelectRange(n.values, 0, index)
+		values := slice.Slice(n.values, 0, index)
 
 		if len(values) < minBranches {
 			return nil, values, 0
@@ -593,11 +695,11 @@ func leftSlice[V any](n node[V], h int, index int) (left *node[V], tail []*refVa
 		n1, tail, newSize = leftSlice(*n.children[position], h-1, index>>shiftTable[1])
 
 		if n1 == nil {
-			n.children = slice.SelectRange(n.children, 0, position)
+			n.children = slice.Slice(n.children, 0, position)
 			return &n, tail, 0
 		}
 
-		n.children = slice.SelectRange(n.children, 0, position+1)
+		n.children = slice.Slice(n.children, 0, position+1)
 		n.children[position] = n1
 
 		size := 1 << (mFactor * h)
@@ -627,13 +729,13 @@ func leftSlice[V any](n node[V], h int, index int) (left *node[V], tail []*refVa
 	n1, tail, newSize = leftSlice(*n.children[position], h-1, position)
 
 	if n1 == nil {
-		n.children = slice.SelectRange(n.children, 0, position)
-		n.sizes = slice.SelectRange(n.sizes, 0, position)
+		n.children = slice.Slice(n.children, 0, position)
+		n.sizes = slice.Slice(n.sizes, 0, position)
 		return &n, tail, 0
 	}
 
-	n.children = slice.SelectRange(n.children, 0, position+1)
-	n.sizes = slice.SelectRange(n.sizes, 0, position+1)
+	n.children = slice.Slice(n.children, 0, position+1)
+	n.sizes = slice.Slice(n.sizes, 0, position+1)
 
 	n.children[position] = n1
 
@@ -650,7 +752,7 @@ func leftSlice[V any](n node[V], h int, index int) (left *node[V], tail []*refVa
 func rightSlice[V any](n node[V], h, index int) (right *node[V], newSize int) {
 	if h == 0 {
 
-		n.children = slice.SelectRange(n.children, index, len(n.values)+1)
+		n.children = slice.Slice(n.children, index, len(n.values)+1)
 
 		return &n, len(n.children)
 	}
@@ -662,7 +764,7 @@ func rightSlice[V any](n node[V], h, index int) (right *node[V], newSize int) {
 		var n1 *node[V]
 		n1, newSize = rightSlice(*n.children[position], h-1, index>>shiftTable[1])
 
-		n.children = slice.SelectRange(n.children, position, len(n.children)+1)
+		n.children = slice.Slice(n.children, position, len(n.children)+1)
 		n.children[0] = n1
 
 		size := 1 << (mFactor * h)
@@ -685,8 +787,8 @@ func rightSlice[V any](n node[V], h, index int) (right *node[V], newSize int) {
 	var n1 *node[V]
 	n1, newSize = rightSlice(*n.children[position], h-1, position)
 
-	n.children = slice.SelectRange(n.children, position, len(n.children)+1)
-	n.sizes = slice.SelectRange(n.sizes, position, len(n.sizes)+1)
+	n.children = slice.Slice(n.children, position, len(n.children)+1)
+	n.sizes = slice.Slice(n.sizes, position, len(n.sizes)+1)
 
 	n.children[position] = n1
 
@@ -699,6 +801,61 @@ func rightSlice[V any](n node[V], h, index int) (right *node[V], newSize int) {
 
 func (t RRBTree[V]) clone() RRBTree[V] {
 	return t
+}
+
+func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
+	start := 0 + len(t.head)
+	end := t.size - len(t.tail)
+
+	//fmt.Println("start , end , i , j", start, end, i, j)
+
+	// [0 : head ) - [start : end) - [tail : size)
+
+	// fmt.Println(t.size, "[0, ", len(t.head), ")", " [", start, " , ", end, ") [", end, t.size, ")", "-->", i)
+	switch {
+	case i > j || i < 0 || j > t.size+1:
+		panic("Index out of bounds")
+	case i >= end: // look into tail
+		t.tail = slice.Slice(t.tail, i-end, j-end)
+		t.size = len(t.tail)
+		t.head = nil
+		t.root = nil
+		return t
+	case j <= start: // look into head
+		t.head = slice.Slice(t.head, i, j)
+		t.size = len(t.head)
+		t.tail = nil
+		t.root = nil
+		return t
+	case i <= start && j >= end:
+		t.head = slice.Slice(t.head, i, start)
+		t.tail = slice.Slice(t.tail, 0, j-end)
+		t.size = j - i
+		return t
+	case i == j:
+		return RRBTree[V]{}
+	default: // look into root
+		t.size = j - i
+
+		if i <= start {
+			t.head = slice.Slice(t.head, i, start)
+			t.root, t.tail = lessOrEqual(t.root, t.h, j-start-1)
+			t.root, t.h = shrink(t.root, t.h)
+			return t
+		} else if j >= end {
+			t.tail = slice.Slice(t.tail, 0, j-end)
+			t.head, t.root = greaterOrEqual(t.root, t.h, i-start)
+			t.root, t.h = shrink(t.root, t.h)
+			return t
+		}
+
+		t.root, t.tail = lessOrEqual(t.root, t.h, j-start-1)
+		t.root, t.h = shrink(t.root, t.h)
+		t.head, t.root = greaterOrEqual(t.root, t.h, i-start)
+		t.root, t.h = shrink(t.root, t.h)
+		return t
+
+	}
 }
 
 func (t RRBTree[V]) split(i int) (_ RRBTree[V], _ RRBTree[V]) {
@@ -725,22 +882,6 @@ func findPosition(sizes []int, idx int) int {
 	}
 
 	return i
-}
-
-func calcIndex(sizes []int, slot, idx int) int {
-	i := slot
-	for i < len(sizes) && sizes[i] <= idx {
-		i++
-	}
-
-	return i
-}
-
-func cloneFirstBranch[V any](n node[V], h int, nodes []*node[V]) {
-
-	nodes[h-1] = &n
-	cloneFirstBranch(*n.children[0], h-1, nodes)
-
 }
 
 func redistributed[V any](left, right node[V], h int) (newL *node[V], newR *node[V]) {
@@ -832,10 +973,10 @@ func merge[V any](left node[V], right node[V], h int) (newL, newR *node[V]) {
 		if !right.isBalancedNode() {
 			right.sizes = slice.Apply(right.sizes[shiftedCount:], func(i, e int) int { return e - right.sizes[shiftedCount-1] })
 		} else {
-			right.sizes = slice.SelectRange(right.getSizeTable(h), shiftedCount, len(right.children))
+			right.sizes = slice.Slice(right.getSizeTable(h), shiftedCount, len(right.children))
 		}
 
-		right.children = slice.SelectRange(right.children, shiftedCount, len(right.children))
+		right.children = slice.Slice(right.children, shiftedCount, len(right.children))
 
 		return &left, &right
 	}
@@ -888,8 +1029,8 @@ func (t RRBTree[V]) concatenate(other RRBTree[V]) {
 		//index := t.size - len(t.tail)
 
 		if len(t.tail) > maxBranches {
-			tail := slice.SelectRange(t.tail, 0, maxBranches)
-			t.tail = slice.SelectRange(t.tail, maxBranches, len(t.tail))
+			tail := slice.Slice(t.tail, 0, maxBranches)
+			t.tail = slice.Slice(t.tail, maxBranches, len(t.tail))
 
 			pushTail(t.root, t.h, tail)
 		}
@@ -1005,4 +1146,8 @@ func (t RRBTree[V]) Pop() (rrb RRBTree[V], value V, ok bool) {
 		return t, v.value, true
 	}
 
+}
+
+func (t RRBTree[V]) Slice(i, j int) RRBTree[V] {
+	return t.slice(i, j)
 }

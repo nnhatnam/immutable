@@ -12,15 +12,22 @@ func Set[S ~[]E, E any](s S, i int, v E) S {
 }
 
 // Copy is similar to `copy` but returns a new slice instead of modifying the destination slice.
-func Copy[S ~[]E, E any](dst, src S, i int) S {
+//func Copy[S ~[]E, E any](dst, src S, i int) S {
+//
+//	s2 := make([]E, len(dst))
+//	copy(s2, dst)
+//	copy(s2[i:], src)
+//	return s2
+//}
 
-	s2 := make([]E, len(dst))
-	copy(s2, dst)
-	copy(s2[i:], src)
+func Copy[S ~[]E, E any](src S) S {
+
+	s2 := make([]E, len(src))
+	copy(s2, src)
 	return s2
 }
 
-func SelectRange[S ~[]E, E any](s S, from, to int) S {
+func Slice[S ~[]E, E any](s S, from, to int) S {
 
 	_ = s[from:to] // bounds check
 

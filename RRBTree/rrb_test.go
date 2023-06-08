@@ -96,6 +96,17 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h int, dump bool) bool {
 	if trueCount != size {
 		t.Fatalf("Expected size of %v, got %v", size, trueCount)
 	}
+
+	if rrb.root != nil {
+		if len(rrb.head)+rrb.root.treeSize+len(rrb.tail) != rrb.size {
+			t.Fatalf("Expected length rrb.size = %v, but calc length is %v ( head + root + tail = %v + %v + %v)", rrb.size, len(rrb.head)+rrb.root.treeSize+len(rrb.tail), len(rrb.head), rrb.root.treeSize, len(rrb.tail))
+		}
+	} else {
+		if len(rrb.head)+len(rrb.tail) != rrb.size {
+			t.Fatalf("Expected length rrb.size = %v, but calc length is %v (head + tail = %v + %v)", rrb.size, len(rrb.head)+len(rrb.tail), len(rrb.head), len(rrb.tail))
+		}
+	}
+
 	return ok
 
 }
@@ -410,4 +421,119 @@ func TestSimpleRRBTree(t *testing.T) {
 		}
 	})
 
+}
+
+func TestRRBTreeSlice(t *testing.T) {
+
+	t.Run("simple right slice", func(t *testing.T) {
+		count := 1 << 11
+		rrb := RRBTree[int]{}
+
+		for i := 0; i < count; i++ {
+			rrb = rrb.Append(i)
+		}
+
+		rrb.slice(0, count)
+		verifyTree(t, &rrb, rrb.h, false)
+
+		history := make([]RRBTree[int], 0)
+		history = append(history, rrb)
+		for i := 1; i < count; i++ {
+			rrb = rrb.Slice(0, count-i)
+			history = append(history, rrb)
+
+		}
+
+		verifyTree(t, &rrb, rrb.h, false)
+
+		for i := 0; i < count; i++ {
+			if history[i].Len() != count-i {
+				t.Fatalf("Expected history length of %v, got %v", count-i, history[i].Len())
+			}
+			verifyTree(t, &history[i], history[i].h, false)
+		}
+
+		if rrb.Len() != 1 {
+			t.Errorf("Expected length of 1, got %v", rrb.Len())
+		}
+
+		rrb = NewRRBTree[int]()
+
+		for i := 0; i < count; i++ {
+			rrb = rrb.Append(i)
+		}
+
+		j := count
+		for j > 0 {
+
+			j = j >> 1
+			rrb = rrb.Slice(0, j)
+			verifyTree(t, &rrb, rrb.h, false)
+		}
+
+	})
+
+	t.Run("simple left slice", func(t *testing.T) {
+		count := 1 << 11
+		rrb := RRBTree[int]{}
+
+		for i := 0; i < count; i++ {
+			rrb = rrb.Append(i)
+
+		}
+
+		history := make([]RRBTree[int], 0)
+		history = append(history, rrb)
+		for i := 1; i < count; i++ {
+			//fmt.Println("slice", 1, count-i+1, " rrb.Len: ", rrb.Len())
+			rrb = rrb.Slice(1, count-i+1)
+			history = append(history, rrb)
+		}
+
+		if rrb.Len() != 1 {
+			t.Errorf("Expected length of 1, got %v", rrb.Len())
+		}
+
+		for i := 0; i < count; i++ {
+			if history[i].Len() != count-i {
+				t.Fatalf("Expected history length of %v, got %v", count-i, history[i].Len())
+			}
+			verifyTree(t, &history[i], history[i].h, false)
+		}
+
+		rrb = NewRRBTree[int]()
+
+		for i := 0; i < count; i++ {
+			rrb = rrb.Append(i)
+		}
+
+		j := 1
+		for rrb.Len() > j {
+			rrb = rrb.Slice(j, rrb.Len())
+			j = j << 1
+			verifyTree(t, &rrb, rrb.h, false)
+		}
+
+	})
+
+	t.Run("simple slice", func(t *testing.T) {
+		count := 1 << 11
+		rrb := RRBTree[int]{}
+
+		for i := 0; i < count; i++ {
+			rrb = rrb.Append(i)
+
+		}
+
+		i, j := 0, rrb.Len()
+
+		for i < j {
+			//fmt.Println("slice", i, j, " rrb.Len: ", rrb.Len())
+			temp := rrb.Slice(i, j)
+			i++
+			j--
+			verifyTree(t, &temp, temp.h, false)
+
+		}
+	})
 }
