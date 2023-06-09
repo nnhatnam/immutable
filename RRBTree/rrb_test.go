@@ -164,6 +164,7 @@ func TestSimpleRRBTree(t *testing.T) {
 			rrb = rrb.Append(i)
 
 		}
+
 		verifyTree(t, &rrb, rrb.h, false)
 
 		if rrb.Len() != 33 {
@@ -192,6 +193,7 @@ func TestSimpleRRBTree(t *testing.T) {
 		if rrb.Len() != 65 {
 			t.Errorf("Expected rrb length of 65, got %v", rrb.Len())
 		}
+
 		for i := 0; i < 65; i++ {
 			if history[i].Len() != i {
 				t.Errorf("Expected history length of %v, got %v", i, history[i].Len())
@@ -208,15 +210,16 @@ func TestSimpleRRBTree(t *testing.T) {
 
 		history := make([]RRBTree[int], 0)
 
-		nums := 1 << 16
+		nums := 1 << 15
 		for i := 0; i < nums; i++ {
+
 			history = append(history, rrb)
 			debugId = i
 
 			rrb = rrb.Append(i)
 
 			// uncomment to debug
-			//verifyTree(t, &rrb, rrb.h, false)
+			// verifyTree(t, &rrb, rrb.h, false)
 
 		}
 

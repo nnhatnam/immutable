@@ -4,6 +4,52 @@ import (
 	"github.com/nnhatnam/immutable/slice"
 )
 
+// items stores items in a node.
+type items[T any] []T
+
+// insertAt inserts a value into the given index, pushing all subsequent values
+// forward.
+func (s *items[T]) insertAt(index int, item T) {
+	var zero T
+	*s = append(*s, zero)
+	if index < len(*s) {
+		copy((*s)[index+1:], (*s)[index:])
+	}
+	(*s)[index] = item
+}
+
+// removeAt removes a value at a given index, pulling all subsequent values
+// back.
+func (s *items[T]) removeAt(index int) T {
+	item := (*s)[index]
+	copy((*s)[index:], (*s)[index+1:])
+	var zero T
+	(*s)[len(*s)-1] = zero
+	*s = (*s)[:len(*s)-1]
+	return item
+}
+
+// pop removes and returns the last element in the list.
+func (s *items[T]) pop() (out T) {
+	index := len(*s) - 1
+	out = (*s)[index]
+	var zero T
+	(*s)[index] = zero
+	*s = (*s)[:index]
+	return
+}
+
+// truncate truncates this instance at index so that it contains only the
+// first index items. index must be less than or equal to length.
+func (s *items[T]) truncate(index int) {
+	var toClear items[T]
+	*s, toClear = (*s)[:index], (*s)[index:]
+	var zero T
+	for i := 0; i < len(toClear); i++ {
+		toClear[i] = zero
+	}
+}
+
 type refValue[V any] struct {
 	value V
 }
@@ -14,6 +60,33 @@ func newRefValue[V any](value V) *refValue[V] {
 	}
 }
 
+type copyOnWriteContext[V any] struct {
+	rrb *RRBTree[V]
+}
+
+func (cow *copyOnWriteContext[V]) newNode() *node[V] {
+	return &node[V]{
+		cow: cow,
+	}
+}
+
+func (cow *copyOnWriteContext[V]) createLeaf(items []*refValue[V]) *node[V] {
+	return &node[V]{
+		treeSize: len(items),
+		values:   items,
+		cow:      cow,
+	}
+}
+
+func (cow *copyOnWriteContext[V]) createInternalNode(treeSize int, sizes []int, children ...*node[V]) *node[V] {
+	return &node[V]{
+		treeSize: treeSize,
+		sizes:    sizes,
+		children: children,
+		cow:      cow,
+	}
+}
+
 // There are three types of nodes in the tree:
 // PartialNode is a node that has some children.
 // FullNode is a node that is full children.
@@ -21,12 +94,154 @@ func newRefValue[V any](value V) *refValue[V] {
 type node[V any] struct {
 	treeSize int // The size of the tree rooted at this node.
 
-	sizes []int // The size of each child.
+	sizes items[int] // The size of each child.
 
-	children []*node[V]     // The children of the node.
-	values   []*refValue[V] // The values of the node.
+	children items[*node[V]]     // The children of the node.
+	values   items[*refValue[V]] // The values of the node.
 
-	owner *RRBTree[V] // The transient owner of the node. for persistent, it's nil.
+	//owner *RRBTree[V] // The transient owner of the node. for persistent, it's nil.
+
+	cow *copyOnWriteContext[V] // The copy on write context.
+}
+
+func (n *node[V]) mutableFor(cow *copyOnWriteContext[V]) *node[V] {
+	if n != nil && n.cow == cow {
+		return n
+	}
+
+	m := cow.newNode()
+	m.treeSize = n.treeSize
+	m.sizes = slice.Copy(n.sizes)
+	m.children = slice.Copy(n.children)
+	m.values = slice.Copy(n.values)
+
+	return m
+}
+
+type cloneType int
+
+const (
+	cloneWithOneExtraCap cloneType = iota
+)
+
+func (n *node[V]) mutableForWithCustomAllocs(cow *copyOnWriteContext[V], typ cloneType) *node[V] {
+
+	m := cow.newNode()
+
+	switch typ {
+	case cloneWithOneExtraCap:
+		m.treeSize = n.treeSize
+
+		if len(n.sizes) != 0 {
+			m.sizes = make([]int, len(n.sizes), len(n.sizes)+1)
+			copy(m.sizes, n.sizes)
+		}
+
+		m.children = make([]*node[V], len(n.children), len(n.children)+1)
+		copy(m.children, n.children)
+	default:
+		panic("unknown clone action")
+	}
+
+	return m
+
+}
+
+func (n *node[V]) mutableChild(i int) *node[V] {
+	m := n.mutableFor(n.cow)
+	m.children[i] = m.children[i].mutableFor(n.cow)
+	return m
+}
+
+func (n *node[V]) hasFullChildren() bool {
+	return len(n.children) == maxBranches
+}
+
+func (n *node[V]) isFullNode() bool {
+	return len(n.children) == maxBranches
+}
+
+func (n *node[V]) pushChild(child *node[V]) {
+
+	n.treeSize = n.treeSize + child.treeSize
+	n.children = append(n.children, child)
+
+	if n.isRelaxedNode() {
+		n.sizes = append(n.sizes, n.treeSize)
+	}
+}
+
+func (n *node[V]) setChildAt(index, height int, child *node[V]) {
+
+	//m := n.mutableFor(n.cow)
+	switch {
+	case index == len(n.children)-1:
+
+		n.treeSize = n.treeSize + child.treeSize - n.children[index].treeSize
+		n.children[index] = child
+
+		if n.isRelaxedNode() {
+			// node has only one child, and it's the last one. We set the child's treeSize as the node's treeSize.
+			n.sizes[index] = n.treeSize
+		}
+
+	case index == 0:
+		return
+	default:
+		return
+	}
+	return
+
+}
+
+type branchType int
+
+const (
+	oldBranch branchType = iota
+	newBranch
+)
+
+func (n *node[V]) pushTail(h int, tail []*refValue[V]) (*node[V], int) {
+	var pushTailRecursive func(*node[V], int) (*node[V], branchType)
+
+	pushTailRecursive = func(m *node[V], h int) (*node[V], branchType) {
+
+		if h == 0 {
+			return m.cow.createLeaf(tail), newBranch
+		}
+
+		child, bType := pushTailRecursive(m.children[len(m.children)-1], h-1)
+
+		if bType == oldBranch {
+			out := m.mutableFor(m.cow)
+			//out.setChildAt(len(out.children)-1, h, child)
+			out.setChildAt(len(out.children)-1, h, child)
+			return out, oldBranch
+		}
+
+		// if we get here, it means we have a new branch
+		// so we either push the child to the current node or create a new node if the current node is full
+		if m.hasFullChildren() {
+			if child.isRelaxedNode() {
+				return m.cow.createInternalNode(child.treeSize, []int{child.treeSize}, child), newBranch
+			}
+		}
+
+		out := m.mutableForWithCustomAllocs(m.cow, cloneWithOneExtraCap)
+		//out.setChildAt(len(out.children)-1, h, child)
+		out.pushChild(child)
+		return out, oldBranch
+	}
+
+	m, bType := pushTailRecursive(n, h)
+	if bType == newBranch {
+		var sizes []int
+		if n.isRelaxedNode() || m.isRelaxedNode() {
+			sizes = []int{n.treeSize, n.treeSize + m.treeSize}
+		}
+		return n.cow.createInternalNode(n.treeSize+m.treeSize, sizes, n, m), h + 1
+	}
+	return m, h
 }
 
 func (n *node[V]) shallowClone() *node[V] {
@@ -34,12 +249,18 @@ func (n *node[V]) shallowClone() *node[V] {
 	return &clone
 }
 
-func (n *node[V]) isFullNode() bool {
-	return len(n.children) == maxBranches
-}
-
 func (n *node[V]) isBalancedNode() bool {
 	return len(n.sizes) == 0
+}
+
+func (n *node[V]) isRelaxedNode() bool {
+
+	if len(n.children) > 0 {
+		return len(n.sizes) != 0
+	}
+
+	return len(n.children) != maxBranches
+
 }
 
 func (n *node[V]) isBalanced(h int) bool {
@@ -320,35 +541,69 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 
 	if len(t.tail) == maxBranches {
 		// make a new branch
-
 		if t.root == nil {
-			t.root = createLeaf(t.tail)
+			t.root = (*copyOnWriteContext[V])(nil).createLeaf(t.tail)
 			t.tail = nil
 			return t
 		}
 
-		m, isNewBranch := pushTail(t.root, t.h, t.tail)
-		if isNewBranch {
-
-			t.h++
-
-			var sizes []int
-			if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
-				sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
-			}
-
-			t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
-
-		} else {
-			t.root = m
-		}
-
+		t.root, t.h = t.root.pushTail(t.h, t.tail)
 		t.tail = nil
+
 	}
 
 	return t
 
 }
+
+//// https://github.com/golang/go/wiki/CodeReviewComments#receiver-type
+//// pass node as value to make sure it is always shallow copied.
+//// caller must make sure that n is not nil or lese it will panic with nil pointer dereference.
+//// it is very useful for persistent data structure.
+//func (t RRBTree[V]) push(value V) RRBTree[V] {
+//	// Value receiver makes a copy of the type and pass it to the function.
+//	// The function stack now holds an equal object but at a different location on memory.
+//	// That means any changes done on the passed object will remain local to the method.
+//	// The original object will remain unchanged.
+//
+//	if t.tail == nil {
+//		t.tail = make([]*refValue[V], 0, maxBranches)
+//	}
+//
+//	t.tail = append(t.tail, newRefValue[V](value))
+//	t.size++
+//
+//	if len(t.tail) == maxBranches {
+//		// make a new branch
+//
+//		if t.root == nil {
+//			t.root = createLeaf(t.tail)
+//			t.tail = nil
+//			return t
+//		}
+//
+//		m, isNewBranch := pushTail(t.root, t.h, t.tail)
+//		if isNewBranch {
+//
+//			t.h++
+//
+//			var sizes []int
+//			if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
+//				sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
+//			}
+//
+//			t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
+//
+//		} else {
+//			t.root = m
+//		}
+//
+//		t.tail = nil
+//	}
+//
+//	return t
+//
+//}
 
 func prependChildToPartialNode[V any](n *node[V], h int, child *node[V]) *node[V] {
 
@@ -670,139 +925,6 @@ func lessOrEqual[V any](root *node[V], h int, index int) (left *node[V], tail []
 
 }
 
-// leftSlice doesn't include the index
-func leftSlice[V any](n node[V], h int, index int) (left *node[V], tail []*refValue[V], newSize int) {
-
-	if h == 0 {
-
-		values := slice.Slice(n.values, 0, index)
-
-		if len(values) < minBranches {
-			return nil, values, 0
-		}
-
-		return &node[V]{
-			values: values,
-		}, nil, len(values)
-
-	}
-
-	var position int
-	if n.isBalancedNode() {
-		// the rest will be balanced
-		position = index & maskTable[0]
-		var n1 *node[V]
-		n1, tail, newSize = leftSlice(*n.children[position], h-1, index>>shiftTable[1])
-
-		if n1 == nil {
-			n.children = slice.Slice(n.children, 0, position)
-			return &n, tail, 0
-		}
-
-		n.children = slice.Slice(n.children, 0, position+1)
-		n.children[position] = n1
-
-		size := 1 << (mFactor * h)
-		if newSize < size {
-
-			n.sizes = make([]int, position)
-			cumulative := size
-			for i := 0; i < position; i++ {
-				n.sizes[i] = cumulative
-				cumulative += size
-			}
-			cumulative = cumulative + newSize
-			n.sizes[position] = cumulative
-			return &n, tail, 0
-
-		}
-
-		return &n, tail, newSize
-
-	}
-
-	// unbalanced node
-
-	position = findPosition(n.sizes, index)
-
-	var n1 *node[V]
-	n1, tail, newSize = leftSlice(*n.children[position], h-1, position)
-
-	if n1 == nil {
-		n.children = slice.Slice(n.children, 0, position)
-		n.sizes = slice.Slice(n.sizes, 0, position)
-		return &n, tail, 0
-	}
-
-	n.children = slice.Slice(n.children, 0, position+1)
-	n.sizes = slice.Slice(n.sizes, 0, position+1)
-
-	n.children[position] = n1
-
-	if len(n.sizes) > 1 {
-		n.sizes[position] = n.sizes[position-1] + newSize
-	} else {
-		n.sizes[position] = newSize
-	}
-
-	return &n, tail, newSize
-
-}
-
-func rightSlice[V any](n node[V], h, index int) (right *node[V], newSize int) {
-	if h == 0 {
-
-		n.children = slice.Slice(n.children, index, len(n.values)+1)
-
-		return &n, len(n.children)
-	}
-
-	var position int
-	if n.isBalancedNode() {
-
-		position = index & maskTable[0]
-		var n1 *node[V]
-		n1, newSize = rightSlice(*n.children[position], h-1, index>>shiftTable[1])
-
-		n.children = slice.Slice(n.children, position, len(n.children)+1)
-		n.children[0] = n1
-
-		size := 1 << (mFactor * h)
-		n.sizes = make([]int, len(n.children))
-
-		cumulative := newSize
-		for i := 0; i < len(n.children); i++ {
-			n.sizes[i] = cumulative
-			cumulative += size
-		}
-
-		return &n, newSize
-
-	}
-
-	// unbalanced node
-
-	position = findPosition(n.sizes, index)
-
-	var n1 *node[V]
-	n1, newSize = rightSlice(*n.children[position], h-1, position)
-
-	n.children = slice.Slice(n.children, position, len(n.children)+1)
-	n.sizes = slice.Slice(n.sizes, position, len(n.sizes)+1)
-
-	n.children[position] = n1
-
-	for k, v := range n.sizes {
-		n.sizes[k] = v - index
-	}
-
-	return &n, newSize
-}
-
-func (t RRBTree[V]) clone() RRBTree[V] {
-	return t
-}
-
 func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
 	start := 0 + len(t.head)
 	end := t.size - len(t.tail)
@@ -856,23 +978,6 @@ func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
 		return t
 
 	}
-}
-
-func (t RRBTree[V]) split(i int) (_ RRBTree[V], _ RRBTree[V]) {
-	if i > t.size {
-		panic("Index out of bounds")
-	}
-
-	var newSize int
-	right := t.clone()
-	right.root, newSize = rightSlice(*right.root, right.h, i)
-	right.size = t.size - newSize
-
-	t.root, t.tail, newSize = leftSlice(*t.root, t.h, i)
-	t.size = newSize + 1
-
-	return t, right
-
 }
 
 func findPosition(sizes []int, idx int) int {
@@ -1023,21 +1128,61 @@ func mergeLeaf[V any](left node[V], right node[V]) (mergedRoot *node[V]) {
 	return
 }
 
-func (t RRBTree[V]) concatenate(other RRBTree[V]) {
+func (t RRBTree[V]) concatenate(other RRBTree[V]) (rrb RRBTree[V]) {
+
 	if other.root == nil {
-		t.tail = slice.Concat(t.tail, other.tail)
-		//index := t.size - len(t.tail)
+
+		tail := make([]*refValue[V], len(t.tail)+len(other.head)+len(other.tail))
+		copy(tail, t.tail)
+		copy(tail[len(t.tail):], other.head)
+		copy(tail[len(t.tail)+len(other.head):], other.tail)
+
+		t.tail = tail
 
 		if len(t.tail) > maxBranches {
-			tail := slice.Slice(t.tail, 0, maxBranches)
-			t.tail = slice.Slice(t.tail, maxBranches, len(t.tail))
+			tail = t.tail[:maxBranches]
+			t.tail = t.tail[maxBranches:]
 
-			pushTail(t.root, t.h, tail)
+			m, isNewBranch := pushTail(t.root, t.h, tail)
+
+			if isNewBranch {
+
+				t.h++
+
+				var sizes []int
+				if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
+					sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
+				}
+
+				t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
+
+			} else {
+				t.root = m
+			}
 		}
 
 		t.size += other.size
 		return
 	}
+
+	m, isNewBranch := pushTail(t.root, t.h, t.tail)
+	if isNewBranch {
+
+		t.h++
+
+		var sizes []int
+		if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
+			sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
+		}
+
+		t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
+
+	} else {
+		t.root = m
+	}
+
+	t.tail = nil
+	return
 }
 
 func navigate[V any](node *node[V], h, position int) (idx, nextPos int) {
