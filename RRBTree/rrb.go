@@ -99,7 +99,7 @@ func newRefValue[V any](value V) *refValue[V] {
 }
 
 type copyOnWriteContext[V any] struct {
-	rrb *RRBTree[V]
+	owner *RRBTree[V]
 }
 
 func (cow *copyOnWriteContext[V]) newNode() *node[V] {
@@ -143,7 +143,8 @@ type node[V any] struct {
 }
 
 func (n *node[V]) mutableFor(cow *copyOnWriteContext[V]) *node[V] {
-	if n != nil && n.cow == cow {
+
+	if n.cow != nil && n.cow == cow {
 		return n
 	}
 
@@ -378,7 +379,7 @@ func (n *node[V]) retain(h, i int) (*node[V], items[*refValue[V]]) {
 	offset := child.treeSize - n.readCumulativeSize(h, 0)
 	n.treeSize += offset
 
-	for i := 0; i < len(n.sizes); i++ {
+	for i = 0; i < len(n.sizes); i++ {
 		n.sizes[i] = n.sizes[i] + offset
 	}
 
@@ -438,12 +439,23 @@ func (n *node[V]) pushTail(h int, tail []*refValue[V]) (*node[V], int) {
 			return m.cow.createLeaf(tail), newBranch
 		}
 
-		child, bType := pushTailRecursive(m.children[len(m.children)-1], h-1)
+		slot := len(m.children) - 1
+		slotTreeSize := m.children[slot].treeSize
+
+		m.children[slot] = m.children[slot].mutableFor(m.cow)
+
+		child, bType := pushTailRecursive(m.children[slot], h-1)
 
 		if bType == oldBranch {
-			out := m.mutableFor(m.cow)
-			out.setChild(h, len(out.children)-1, child)
-			return out, oldBranch
+			//out := m.mutableFor(m.cow)
+			//out.setChild(h, len(out.children)-1, child)
+			offset := child.treeSize - slotTreeSize
+			m.treeSize += offset
+			if m.isRelaxedNode() {
+				m.sizes[slot] = m.treeSize
+			}
+
+			return m, oldBranch
 		}
 
 		// if we get here, it means we have a new branch
@@ -456,9 +468,19 @@ func (n *node[V]) pushTail(h int, tail []*refValue[V]) (*node[V], int) {
 			return m.cow.createInternalNode(child.treeSize, nil, child), newBranch
 		}
 
-		out := m.mutableForWithCustomAllocs(m.cow, cloneWithOneExtraCap)
-		out.addChild(child)
-		return out, oldBranch
+		m.treeSize += child.treeSize
+		m.children = append(m.children, child)
+
+		if m.isRelaxedNode() {
+			m.sizes = append(m.sizes, m.treeSize)
+		} else if child.isRelaxedNode() {
+			m.sizes = slice.Copy(cumulativeSumTable[h][:slot+2])
+			m.sizes[slot+1] = m.treeSize
+		}
+
+		//out := m.mutableForWithCustomAllocs(m.cow, cloneWithOneExtraCap)
+		//out.addChild(child)
+		return m, oldBranch
 	}
 
 	m, bType := pushTailRecursive(n, h)
@@ -477,7 +499,6 @@ func (n *node[V]) pop(h int) (_ *node[V], _ int, value *refValue[V], tail items[
 	var popRecursive func(*node[V], int) *node[V]
 
 	popRecursive = func(m *node[V], h int) *node[V] {
-
 		if h == 0 {
 
 			value = m.values.pop()
@@ -492,9 +513,12 @@ func (n *node[V]) pop(h int) (_ *node[V], _ int, value *refValue[V], tail items[
 		}
 
 		slot := len(m.children) - 1
+		slotTreeSize := m.children[slot].treeSize
 
-		//child := m.mutableChild(slot)
-		child := popRecursive(m.mutableChild(slot), h-1)
+		m.children[slot] = m.children[slot].mutableFor(m.cow)
+
+		// this is the start of recursive call
+		child := popRecursive(m.children[slot], h-1)
 
 		if child == nil {
 
@@ -502,18 +526,25 @@ func (n *node[V]) pop(h int) (_ *node[V], _ int, value *refValue[V], tail items[
 				return nil
 			}
 
-			m.children.pop()
+			m.treeSize -= slotTreeSize
 			m.sizes.pop()
-			m.treeSize = m.readCumulativeSize(h, slot-1)
+			m.children.pop()
+
 			return m
 		}
 
-		m.setChild(h, slot, child)
+		offset := child.treeSize - slotTreeSize
+
+		m.treeSize += offset
+		if m.isRelaxedNode() {
+			m.sizes[slot] = m.treeSize
+		}
+
 		return m
 
 	}
 
-	m := popRecursive(n.mutableFor(n.cow), h)
+	m := popRecursive(n, h)
 	if m == nil {
 		return nil, 0, value, tail
 	}
@@ -626,6 +657,7 @@ type RRBTree[V any] struct {
 
 	tail items[*refValue[V]] // The tail of the tree.
 
+	cow *copyOnWriteContext[V]
 }
 
 func NewRRBTree[V any]() RRBTree[V] {
@@ -764,6 +796,7 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 	if len(t.tail) == maxBranches {
 		// make a new branch
 		if t.root == nil {
+			t.cow = &copyOnWriteContext[V]{}
 			t.root = (*copyOnWriteContext[V])(nil).createLeaf(t.tail)
 			t.tail = nil
 			return t
@@ -771,6 +804,7 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 
 		// pushTail may create a new root, so in some cases we don't need to clone the current root.
 		// For that reason, clone the root will be decided inside pushTail.
+		t.root = t.root.mutableFor(nil)
 		t.root, t.h = t.root.pushTail(t.h, t.tail)
 		t.tail = nil
 
@@ -1601,10 +1635,13 @@ func (t RRBTree[V]) Pop() (rrb RRBTree[V], value V, ok bool) {
 		return t, v.value, true
 	default:
 		var v *refValue[V]
-		//t.root, v, t.tail, t.h = pop(*t.root, t.h)
-		t.root, v, t.tail = popBack(t.root, t.h)
-		t.root, t.h = shrink(t.root, t.h)
+		t.root = t.root.mutableFor(nil)
+		t.root, t.h, v, t.tail = t.root.pop(t.h)
 		t.size--
+
+		if v == nil {
+			return t, value, false
+		}
 		return t, v.value, true
 	}
 

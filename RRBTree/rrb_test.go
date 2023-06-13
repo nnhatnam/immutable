@@ -211,6 +211,7 @@ func TestSimpleRRBTree(t *testing.T) {
 		history := make([]RRBTree[int], 0)
 
 		nums := 1 << 15
+		//nums := 96
 		for i := 0; i < nums; i++ {
 
 			history = append(history, rrb)
@@ -242,7 +243,7 @@ func TestSimpleRRBTree(t *testing.T) {
 	t.Run("Simple Pop", func(t *testing.T) {
 		rrb := RRBTree[int]{}
 
-		count := 1 << 10 // reduce count for debugging
+		count := 1 << 16 // reduce count for debugging
 		for i := 0; i < count; i++ {
 			rrb = rrb.Append(i)
 		}
@@ -251,7 +252,6 @@ func TestSimpleRRBTree(t *testing.T) {
 
 			var result int
 			var ok bool
-
 			rrb, result, ok = rrb.Pop()
 
 			verifyTree(t, &rrb, rrb.h, false)
