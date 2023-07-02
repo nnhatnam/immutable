@@ -36,6 +36,15 @@ func Slice[S ~[]E, E any](s S, from, to int) S {
 	return s2
 }
 
+func Truncate[S ~[]E, E any](s S, length int) S {
+
+	_ = s[:length] // bounds check
+
+	s2 := make([]E, length)
+	copy(s2, s[:length])
+	return s2
+}
+
 // Update creates a new slice that is identical to `s` except that the element at index `i` is set to `f(s[i])`.
 // Update panics if `i` is out of range.
 // If `f` is nil, this function is equivalent to Set(s, i, s[i]).

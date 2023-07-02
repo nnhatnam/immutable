@@ -30,12 +30,12 @@ func toArr[V any](arr []*refValue[V]) []V {
 	return result
 }
 
-func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h int, dump bool) bool {
+func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h height, dump bool) bool {
 	t.Helper()
 
-	var verify func(n *node[V], h int, path string, isLastBranch bool) (int, bool)
+	var verify func(n *node[V], h height, path string, isLastBranch bool) (int, bool)
 
-	verify = func(n *node[V], h int, path string, isLastBranch bool) (int, bool) {
+	verify = func(n *node[V], h height, path string, isLastBranch bool) (int, bool) {
 		//fmt.Println("Calling path: ", path, isLastBranch, len(n.children))
 		if n == nil {
 			return 0, true
@@ -186,9 +186,11 @@ func TestSimpleRRBTree(t *testing.T) {
 		for i := 0; i < 32; i++ {
 			history = append(history, rrb)
 			rrb = rrb.Append(33 + i)
+
+			verifyTree(t, &rrb, rrb.h, false)
 		}
 
-		verifyTree(t, &rrb, rrb.h, false)
+		//verifyTree(t, &rrb, rrb.h, false)
 
 		if rrb.Len() != 65 {
 			t.Errorf("Expected rrb length of 65, got %v", rrb.Len())
@@ -211,7 +213,7 @@ func TestSimpleRRBTree(t *testing.T) {
 		history := make([]RRBTree[int], 0)
 
 		nums := 1 << 15
-		//nums := 96
+		//nums := 1088
 		for i := 0; i < nums; i++ {
 
 			history = append(history, rrb)
@@ -220,7 +222,7 @@ func TestSimpleRRBTree(t *testing.T) {
 			rrb = rrb.Append(i)
 
 			// uncomment to debug
-			// verifyTree(t, &rrb, rrb.h, false)
+			//verifyTree(t, &rrb, rrb.h, false)
 
 		}
 
@@ -358,16 +360,16 @@ func TestSimpleRRBTree(t *testing.T) {
 		verifyTree(t, &rrb, rrb.h, false)
 
 		if rrb.Len() != 33 {
-			t.Errorf("Expected rrb length of 33, got %v", rrb.Len())
+			t.Fatalf("Expected rrb length of 33, got %v", rrb.Len())
 		}
 
 		for i := 0; i < 33; i++ {
 
 			if history[i].Len() != i {
-				t.Errorf("Expected history length of %v, got %v", i, history[i].Len())
+				t.Fatalf("Expected history length of %v, got %v", i, history[i].Len())
 			}
 			if rrb.Get(i) != i-32 {
-				t.Errorf("Expected find the value %v, got %v", i-32, rrb.Get(i))
+				t.Fatalf("Expected find the value %v, got %v", i-32, rrb.Get(i))
 			}
 		}
 

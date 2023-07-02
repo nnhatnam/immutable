@@ -39,11 +39,10 @@ func (s *items[T]) pop() (out T) {
 	return
 }
 
-// truncate truncates this instance at index so that it contains only the
-// first index items. index must be less than or equal to length.
-func (s *items[T]) truncate(index int) {
+// truncate truncates items to the given length.
+func (s *items[T]) truncate(length int) {
 	var toClear items[T]
-	*s, toClear = (*s)[:index], (*s)[index:]
+	*s, toClear = (*s)[:length], (*s)[length:]
 	var zero T
 	for i := 0; i < len(toClear); i++ {
 		toClear[i] = zero
@@ -80,11 +79,11 @@ func (s *items[T]) slice(i, j int) {
 	left, *s, right = (*s)[:i], (*s)[i:j], (*s)[j:]
 
 	var zero T
-	for i := 0; i < len(left); i++ {
-		left[i] = zero
+	for k := 0; k < len(left); k++ {
+		left[k] = zero
 	}
-	for i := 0; i < len(right); i++ {
-		right[i] = zero
+	for k := 0; k < len(right); k++ {
+		right[k] = zero
 	}
 }
 
@@ -157,6 +156,51 @@ func (n *node[V]) mutableFor(cow *copyOnWriteContext[V]) *node[V] {
 	return m
 }
 
+type mutableFlag int
+
+const (
+	mAPPEND mutableFlag = iota
+	mPREPEND
+	mPOP
+	mUPDATE
+	mDUPLICATE
+)
+
+func (n *node[V]) mutFor(cow *copyOnWriteContext[V], flag mutableFlag) *node[V] {
+	switch flag {
+	case mAPPEND, mPREPEND:
+		if n.cow != nil && n.cow == cow {
+			return n
+		}
+		m := cow.newNode()
+		m.treeSize = n.treeSize
+
+		if len(n.sizes) != 0 {
+			m.sizes = make([]int, len(n.sizes), len(n.sizes)+1)
+			copy(m.sizes, n.sizes)
+		}
+
+		m.children = make([]*node[V], len(n.children), len(n.children)+1)
+		copy(m.children, n.children)
+		return m
+	case mUPDATE, mDUPLICATE:
+		if n.cow != nil && n.cow == cow {
+			return n
+		}
+
+		m := cow.newNode()
+		m.treeSize = n.treeSize
+		m.sizes = slice.Copy(n.sizes)
+		m.children = slice.Copy(n.children)
+		m.values = slice.Copy(n.values)
+		return m
+
+	default:
+		panic("unreachable")
+		return nil
+	}
+}
+
 type cloneType int
 
 const (
@@ -210,11 +254,15 @@ func (n *node[V]) isFullNode() bool {
 	return len(n.children) == maxBranches
 }
 
+func (n *node[V]) isLeafNode() bool {
+	return len(n.children) == 0
+}
+
 func (n *node[V]) isEmpty() bool {
 	return len(n.children) == 0
 }
 
-func (n *node[V]) insertAt(height, index int, child *node[V]) {
+func (n *node[V]) insertAt(h height, index int, child *node[V]) {
 	n.treeSize = n.treeSize + child.treeSize
 	n.children.insertAt(index, child)
 
@@ -223,7 +271,7 @@ func (n *node[V]) insertAt(height, index int, child *node[V]) {
 	if n.isRelaxedNode() {
 		sizes.insertAt(index, child.treeSize)
 
-		size := child.treeSize + n.readCumulativeSize(height, index-1)
+		size := child.treeSize + n.readCumulativeSize(h, index-1)
 		sizes[index] = size
 
 		for i := index + 1; i < len(n.sizes); i++ {
@@ -232,8 +280,8 @@ func (n *node[V]) insertAt(height, index int, child *node[V]) {
 
 	}
 
-	if child.treeSize != cumulativeSumTable[height][0] {
-		sizes = slice.Copy(cumulativeSumTable[height][:len(n.children)])
+	if child.treeSize != cumulativeSumTable[h][0] {
+		sizes = slice.Copy(cumulativeSumTable[h][:len(n.children)])
 		offset := child.treeSize - sizes[index]
 		sizes[index] = child.treeSize
 
@@ -256,16 +304,16 @@ func (n *node[V]) addChild(child *node[V]) {
 	}
 }
 
-func (n *node[V]) setChild(height, index int, child *node[V]) {
+func (n *node[V]) setChild(h height, index int, child *node[V]) {
 
-	if n.isBalancedNode() && child.treeSize != cumulativeSumTable[height][0] {
+	if n.isBalancedNode() && child.treeSize != cumulativeSumTable[h][0] {
 
 		// build the sizes table
-		n.sizes = slice.Copy(cumulativeSumTable[height][:len(n.children)])
+		n.sizes = slice.Copy(cumulativeSumTable[h][:len(n.children)])
 		n.sizes[len(n.children)-1] = n.treeSize
 	}
 
-	offset := n.readCumulativeSize(height, index) - n.readCumulativeSize(height, index-1)
+	offset := n.readCumulativeSize(h, index) - n.readCumulativeSize(h, index-1)
 	offset = child.treeSize - offset
 
 	n.children[index] = child
@@ -281,7 +329,7 @@ func (n *node[V]) setChild(height, index int, child *node[V]) {
 // readCumulativeSize find the cumulative size based of the `sizes` array inside the node for relaxed nodes.
 // For balance nodes, it uses the cumulativeSumTable.
 // Because the way it is calculated, it must be called when we are sure the sizes array is up-to-date.
-func (n *node[V]) readCumulativeSize(height, index int) int {
+func (n *node[V]) readCumulativeSize(h height, index int) int {
 
 	switch {
 	case n.isRelaxedNode():
@@ -291,19 +339,90 @@ func (n *node[V]) readCumulativeSize(height, index int) int {
 	case index < 0:
 		return 0
 	default:
-		return cumulativeSumTable[height][index]
+		return cumulativeSumTable[h][index]
 	}
 
 }
 
 type branchType int
+type height int
 
 const (
 	oldBranch branchType = iota
 	newBranch
 )
 
-func (n *node[V]) truncate(h, i int) (*node[V], items[*refValue[V]]) {
+func (b branchType) String() string {
+	switch b {
+	case oldBranch:
+		return "old branch"
+	case newBranch:
+		return "new branch"
+	default:
+		return "unknown"
+	}
+}
+
+func (n *node[V]) truncateItemsFor(cow *copyOnWriteContext[V], at height, length int) (*node[V], height, items[*refValue[V]]) {
+	if n.isLeafNode() {
+		m := n.mutFor(cow, mDUPLICATE)
+		m.values.truncate(length)
+		if length < maxBranches {
+			return nil, 0, m.values
+		}
+		m.treeSize = len(m.values)
+		return m, 0, nil
+	}
+
+	var slot int
+	i := length - 1
+	slot, i = navigate(n, at, i)
+
+	child, childHeight, tail := n.children[slot].truncateItemsFor(cow, at-1, i+1)
+
+	if child == nil {
+
+		if slot == 0 {
+			return nil, at, tail
+		}
+
+		m := n.mutFor(cow, mDUPLICATE)
+
+		n.treeSize = n.readCumulativeSize(at, slot-1)
+		n.children.truncate(slot)
+		n.sizes.maybeTruncate(slot)
+
+		return m, at, tail
+	}
+
+	m := n.mutFor(cow, mDUPLICATE)
+	m.treeSize = m.readCumulativeSize(at, slot)
+	m.children.truncate(slot + 1)
+	m.sizes.maybeTruncate(slot + 1)
+
+	slotTreeSize := m.treeSize
+	offset := child.treeSize - slotTreeSize
+
+	m.treeSize += offset
+	if m.isRelaxedNode() {
+		m.sizes[slot] = m.treeSize
+	}
+
+	if at == childHeight+1 {
+		m, at = shrink(m, at)
+		return m, at, tail
+	}
+
+	return m, at, tail
+
+}
+
+func (n *node[V]) truncateFor(cow *copyOnWriteContext[V], h height, length int) (*node[V], items[*refValue[V]]) {
+	m, _, tail := n.truncateItemsFor(cow, h, length)
+	return m, tail
+}
+
+func (n *node[V]) truncate(h height, i int) (*node[V], items[*refValue[V]]) {
 
 	if h == 0 {
 		n.values.truncate(i)
@@ -340,16 +459,62 @@ func (n *node[V]) truncate(h, i int) (*node[V], items[*refValue[V]]) {
 	// cumulative size at slot - 1
 	n.setChild(h, slot, child)
 
-	//n.children[slot] = child
-	//
-	//newSize := n.findCumulativeSize(h, slot-1) + child.treeSize
-	//n.treeSize = newSize
-	//n.sizes[slot] = newSize
-
 	return n, tail
 }
 
-func (n *node[V]) retain(h, i int) (*node[V], items[*refValue[V]]) {
+func (n *node[V]) retainItemsFor(cow *copyOnWriteContext[V], at height, from int) (*node[V], height, items[*refValue[V]]) {
+	if n.isLeafNode() {
+		m := n.mutFor(cow, mDUPLICATE)
+		m.values.retain(from)
+		if len(m.values) < maxBranches {
+			return nil, 0, m.values
+		}
+		m.treeSize = len(m.values)
+		return m, 0, nil
+	}
+
+	var slot int
+	slot, from = navigate(n, at, from)
+
+	child, childHeight, head := n.children[slot].retainItemsFor(cow, at-1, from)
+
+	if child == nil {
+		if slot == len(n.children)-1 {
+			return nil, at, head
+		}
+
+		slot = slot + 1
+	}
+
+	m := n.mutFor(cow, mDUPLICATE)
+
+	slotSize := m.readCumulativeSize(at, slot)
+
+	offset := child.treeSize - slotSize
+	n.treeSize += offset
+	m.children.retain(slot)
+	m.sizes.maybeRetain(slot)
+
+	for i := 0; i < len(n.sizes); i++ {
+		n.sizes[i] = n.sizes[i] + offset
+	}
+
+	if at == childHeight+1 {
+		m, at = shrink(m, at)
+		return m, at, head
+	}
+
+	return m, at, head
+}
+
+func (n *node[V]) retainFor(cow *copyOnWriteContext[V], h height, i int) (*node[V], items[*refValue[V]]) {
+
+	m, _, head := n.retainItemsFor(cow, h, i)
+	return m, head
+
+}
+
+func (n *node[V]) retain(h height, i int) (*node[V], items[*refValue[V]]) {
 
 	if h == 0 {
 		n.values.retain(i)
@@ -386,20 +551,104 @@ func (n *node[V]) retain(h, i int) (*node[V], items[*refValue[V]]) {
 	return n, head
 }
 
-func (n *node[V]) pushHead(h int, head []*refValue[V]) (*node[V], int) {
+func (n *node[V]) pushFrontItemsFor(cow *copyOnWriteContext[V], isRoot bool, items []*refValue[V]) (*node[V], branchType, height) {
+	if n.isLeafNode() {
+		return cow.createLeaf(items), newBranch, 0
+	}
+	slotSize := n.children[0].treeSize
 
-	var pushHeadRecursive func(*node[V], int) (*node[V], branchType)
+	child, bType, childHeight := n.children[0].pushFrontItemsFor(cow, false, items)
 
-	pushHeadRecursive = func(m *node[V], h int) (*node[V], branchType) {
+	pHeight := childHeight + 1
+
+	if bType == oldBranch {
+		m := n.mutFor(cow, mUPDATE)
+		offset := child.treeSize - slotSize
+		m.treeSize += offset
+
+		if child.treeSize != cumulativeSumTable[pHeight][0] {
+			m.sizes = slice.Copy(cumulativeSumTable[pHeight][:len(m.children)])
+		}
+
+		for i := 0; i < len(m.sizes); i++ {
+			m.sizes[i] += offset
+		}
+
+		return m, oldBranch, childHeight + 1
+	}
+
+	// if we get here, it means we have a new branch
+	// so we either push the child to the current node or create a new node if the current node is full
+	if n.hasFullChildren() {
+
+		// if h == childHeight+1, it means that the child is the root.
+		// In this case, we need to create a new root with its children consisting of the child and the old root
+		if isRoot {
+			size := n.treeSize + child.treeSize
+			var sizes []int
+			if n.isRelaxedNode() || child.isRelaxedNode() {
+				sizes = []int{child.treeSize, size}
+			}
+			return cow.createInternalNode(size, sizes, child, n), newBranch, pHeight + 1
+		}
+
+		if child.isRelaxedNode() {
+			return cow.createInternalNode(child.treeSize, []int{child.treeSize}, child), newBranch, pHeight
+		}
+
+		return cow.createInternalNode(child.treeSize, nil, child), newBranch, pHeight
+	}
+
+	// if we get here, it means we are have space to prepend new child, and we are not at the root yet
+	m := n.mutFor(cow, mPREPEND)
+	offset := child.treeSize
+	m.treeSize += offset
+	m.children.insertAt(0, child)
+
+	if child.treeSize != cumulativeSumTable[pHeight][0] {
+		m.sizes = slice.Copy(cumulativeSumTable[pHeight][:len(m.children)])
+		offset = child.treeSize - m.sizes[0]
+	}
+
+	for i := 0; i < len(m.sizes); i++ {
+		m.sizes[i] += offset
+	}
+	return m, oldBranch, childHeight + 1
+
+}
+
+func (n *node[V]) pushFrontItems(cow *copyOnWriteContext[V], items []*refValue[V]) (*node[V], branchType, height) {
+	return n.pushFrontItemsFor(cow, true, items)
+}
+
+func (n *node[V]) pushHead(h height, head []*refValue[V]) (*node[V], height) {
+
+	var pushHeadRecursive func(*node[V], height) (*node[V], branchType)
+
+	pushHeadRecursive = func(m *node[V], h height) (*node[V], branchType) {
 
 		if h == 0 {
 			return m.cow.createLeaf(head), newBranch
 		}
 
+		m.children[0] = m.children[0].mutableFor(m.cow)
+		slotSize := m.children[0].treeSize
+
 		child, bType := pushHeadRecursive(m.children[0], h-1)
 
 		if bType == oldBranch {
-			m.setChild(h, 0, child)
+
+			offset := child.treeSize - slotSize
+			m.treeSize += offset
+
+			if child.treeSize != cumulativeSumTable[h][0] {
+				m.sizes = slice.Copy(cumulativeSumTable[h][:len(m.children)])
+			}
+
+			for i := 0; i < len(m.sizes); i++ {
+				m.sizes[i] += offset
+			}
+
 			return m, oldBranch
 		}
 
@@ -413,7 +662,18 @@ func (n *node[V]) pushHead(h int, head []*refValue[V]) (*node[V], int) {
 			return m.cow.createInternalNode(child.treeSize, nil, child), newBranch
 		}
 
-		m.insertAt(h, 0, child)
+		offset := child.treeSize
+		m.treeSize += offset
+		m.children.insertAt(0, child)
+
+		if child.treeSize != cumulativeSumTable[h][0] {
+			m.sizes = slice.Copy(cumulativeSumTable[h][:len(m.children)])
+			offset = child.treeSize - m.sizes[0]
+		}
+
+		for i := 0; i < len(m.sizes); i++ {
+			m.sizes[i] += offset
+		}
 		return m, oldBranch
 	}
 
@@ -428,12 +688,96 @@ func (n *node[V]) pushHead(h int, head []*refValue[V]) (*node[V], int) {
 	return m, h
 }
 
+func (n *node[V]) pushItemsFor(cow *copyOnWriteContext[V], isRoot bool, items []*refValue[V]) (*node[V], branchType, height) {
+	//if debugId == 1087 {
+	//	fmt.Println("pushItemsFor", isRoot, items)
+	//}
+	if len(n.children) == 0 {
+		// we are in leaf node
+		leaf := cow.createLeaf(items)
+		if isRoot {
+			treeSize := n.treeSize + leaf.treeSize
+			if n.isRelaxedNode() || leaf.isRelaxedNode() {
+				return cow.createInternalNode(treeSize, []int{n.treeSize, treeSize}, n, leaf), newBranch, 1
+			}
+			return cow.createInternalNode(treeSize, nil, n, leaf), newBranch, 1
+		}
+		return leaf, newBranch, 0
+	}
+
+	slot := len(n.children) - 1
+	slotTreeSize := n.children[slot].treeSize
+
+	child, bType, childHeight := n.children[slot].pushItemsFor(cow, false, items)
+
+	pHeight := childHeight + 1
+
+	//if debugId == 1087 {
+	//	fmt.Println("received child", bType, childHeight, pHeight, child)
+	//}
+
+	if bType == oldBranch {
+		m := n.mutFor(cow, mUPDATE)
+		offset := child.treeSize - slotTreeSize
+		m.treeSize += offset
+		if m.isRelaxedNode() {
+			m.sizes[slot] = m.treeSize
+		}
+		m.children[slot] = child
+		return m, oldBranch, pHeight
+	}
+
+	// if we get here, it means we have a new branch
+	// so we either push the child to the current node or create a new node if the current node is full
+	if n.isFullNode() {
+
+		m := cow.createInternalNode(child.treeSize, nil, child)
+
+		if child.isRelaxedNode() {
+			m.sizes = []int{child.treeSize}
+		}
+
+		if isRoot {
+			size := n.treeSize + m.treeSize
+
+			var sizes []int
+			if n.isRelaxedNode() || m.isRelaxedNode() {
+				sizes = []int{n.treeSize, size}
+			}
+			return cow.createInternalNode(size, sizes, n, m), newBranch, pHeight + 1
+		}
+
+		return m, newBranch, pHeight
+	}
+
+	// if we get here, it means we have a new branch and the current node is not full.
+	// So we push the child to the current node
+
+	m := n.mutFor(cow, mAPPEND)
+	m.treeSize += child.treeSize
+	m.children = append(m.children, child)
+
+	if m.isRelaxedNode() {
+		m.sizes = append(m.sizes, m.treeSize)
+	} else if child.isRelaxedNode() {
+		m.sizes = slice.Copy(cumulativeSumTable[pHeight][:slot+2])
+		m.sizes[slot+1] = m.treeSize
+	}
+
+	return m, oldBranch, pHeight
+}
+
+func (n *node[V]) pushItems(cow *copyOnWriteContext[V], items []*refValue[V]) (*node[V], height) {
+	m, _, h := n.pushItemsFor(cow, true, items)
+	return m, h
+}
+
 // pushTail pushes the tail into the tree rooted at the given node `n`.
-func (n *node[V]) pushTail(h int, tail []*refValue[V]) (*node[V], int) {
+func (n *node[V]) pushTail(h height, tail []*refValue[V]) (*node[V], height) {
 
-	var pushTailRecursive func(*node[V], int) (*node[V], branchType)
+	var pushTailRecursive func(*node[V], height) (*node[V], branchType)
 
-	pushTailRecursive = func(m *node[V], h int) (*node[V], branchType) {
+	pushTailRecursive = func(m *node[V], h height) (*node[V], branchType) {
 
 		if h == 0 {
 			return m.cow.createLeaf(tail), newBranch
@@ -494,11 +838,61 @@ func (n *node[V]) pushTail(h int, tail []*refValue[V]) (*node[V], int) {
 	return m, h
 }
 
-func (n *node[V]) pop(h int) (_ *node[V], _ int, value *refValue[V], tail items[*refValue[V]]) {
+func (n *node[V]) popItem(cow *copyOnWriteContext[V], h height) (*node[V], height, *refValue[V], items[*refValue[V]]) {
 
-	var popRecursive func(*node[V], int) *node[V]
+	if n.isLeafNode() {
 
-	popRecursive = func(m *node[V], h int) *node[V] {
+		m := n.mutFor(cow, mPOP)
+
+		ref := m.values.pop()
+
+		if len(m.values) < maxBranches {
+			return nil, 0, ref, m.values
+		}
+
+		m.treeSize--
+		return m, 0, ref, nil
+	}
+
+	slot := len(n.children) - 1
+	slotTreeSize := n.children[slot].treeSize
+
+	child, childHeight, value, tail := n.children[slot].popItem(cow, h)
+
+	if child == nil {
+
+		if slot == 0 {
+			return nil, childHeight + 1, value, tail
+		}
+
+		m := n.mutFor(cow, mDUPLICATE)
+		m.treeSize -= slotTreeSize
+		m.sizes.pop()
+		m.children.pop()
+
+		return m, childHeight + 1, value, tail
+	}
+
+	offset := child.treeSize - slotTreeSize
+	m := n.mutFor(cow, mDUPLICATE)
+	m.treeSize += offset
+	if m.isRelaxedNode() {
+		m.sizes[slot] = m.treeSize
+	}
+
+	if h == childHeight+1 {
+		m, h = shrink(m, h)
+		return m, h, value, tail
+	}
+
+	return m, childHeight + 1, value, tail
+}
+
+func (n *node[V]) pop(h height) (_ *node[V], _ height, value *refValue[V], tail items[*refValue[V]]) {
+
+	var popRecursive func(*node[V], height) *node[V]
+
+	popRecursive = func(m *node[V], h height) *node[V] {
 		if h == 0 {
 
 			value = m.values.pop()
@@ -569,7 +963,7 @@ func (n *node[V]) isRelaxedNode() bool {
 		return len(n.sizes) != 0
 	}
 
-	return len(n.children) != maxBranches
+	return len(n.values) != maxBranches
 
 }
 
@@ -601,7 +995,7 @@ func (n *node[V]) getLength(h int) int {
 
 }
 
-func (n *node[V]) walk(h, i int) []*node[V] {
+func (n *node[V]) walk(h height, i int) []*node[V] {
 	nodes := make([]*node[V], h)
 	root := n
 
@@ -649,7 +1043,7 @@ type RRBTree[V any] struct {
 	// The root node of the tree.
 	root *node[V]
 
-	h int // The current level of the trie. It's counted from the bottom of the trie.
+	h height // The current level of the trie. It's counted from the bottom of the trie.
 
 	size int // The number of elements in the tree.
 
@@ -675,7 +1069,7 @@ func walkFirstBranch[V any](n node[V], h int, nodes []*node[V]) {
 
 }
 
-func shrink[V any](n *node[V], h int) (m *node[V], newH int) {
+func shrink[V any](n *node[V], h height) (m *node[V], newH height) {
 
 	if n == nil || len(n.children) == 0 {
 		return nil, 0
@@ -786,17 +1180,13 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 	// That means any changes done on the passed object will remain local to the method.
 	// The original object will remain unchanged.
 
-	if t.tail == nil {
-		t.tail = make([]*refValue[V], 0, maxBranches)
-	}
-
-	t.tail = append(t.tail, newRefValue[V](value))
+	t.tail = slice.Push(t.tail, newRefValue[V](value))
 	t.size++
 
 	if len(t.tail) == maxBranches {
 		// make a new branch
 		if t.root == nil {
-			t.cow = &copyOnWriteContext[V]{}
+			//t.cow = &copyOnWriteContext[V]{}
 			t.root = (*copyOnWriteContext[V])(nil).createLeaf(t.tail)
 			t.tail = nil
 			return t
@@ -813,55 +1203,6 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 	return t
 
 }
-
-//// https://github.com/golang/go/wiki/CodeReviewComments#receiver-type
-//// pass node as value to make sure it is always shallow copied.
-//// caller must make sure that n is not nil or lese it will panic with nil pointer dereference.
-//// it is very useful for persistent data structure.
-//func (t RRBTree[V]) push(value V) RRBTree[V] {
-//	// Value receiver makes a copy of the type and pass it to the function.
-//	// The function stack now holds an equal object but at a different location on memory.
-//	// That means any changes done on the passed object will remain local to the method.
-//	// The original object will remain unchanged.
-//
-//	if t.tail == nil {
-//		t.tail = make([]*refValue[V], 0, maxBranches)
-//	}
-//
-//	t.tail = append(t.tail, newRefValue[V](value))
-//	t.size++
-//
-//	if len(t.tail) == maxBranches {
-//		// make a new branch
-//
-//		if t.root == nil {
-//			t.root = createLeaf(t.tail)
-//			t.tail = nil
-//			return t
-//		}
-//
-//		m, isNewBranch := pushTail(t.root, t.h, t.tail)
-//		if isNewBranch {
-//
-//			t.h++
-//
-//			var sizes []int
-//			if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
-//				sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
-//			}
-//
-//			t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
-//
-//		} else {
-//			t.root = m
-//		}
-//
-//		t.tail = nil
-//	}
-//
-//	return t
-//
-//}
 
 func prependChildToPartialNode[V any](n *node[V], h int, child *node[V]) *node[V] {
 
@@ -954,272 +1295,24 @@ func pushHead[V any](n *node[V], h int, head []*refValue[V]) (m *node[V], isNewB
 func (t RRBTree[V]) prepend(value V) RRBTree[V] {
 
 	t.head = slice.PushFront(t.head, newRefValue[V](value))
-	//t.head = append(t.head, newRefValue[V](value))
 	t.size++
 
 	if len(t.head) == maxBranches {
 		// make a new branch
 
 		if t.root == nil {
-			t.root = createLeaf(t.head)
+			t.root = (*copyOnWriteContext[V])(nil).createLeaf(t.head)
 			t.head = nil
 			return t
 		}
 
-		m, isNewBranch := pushHead(t.root, t.h, t.head)
-
-		if isNewBranch {
-			t.h++
-
-			var sizes []int
-			if !t.root.isBalancedNode() || !m.isBalancedNode() || m.treeSize != cumulativeSumTable[t.h][0] {
-				sizes = []int{m.treeSize, t.root.treeSize + m.treeSize}
-			}
-
-			t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, m, t.root)
-
-		} else {
-			t.root = m
-
-		}
-
+		t.root = t.root.mutableFor(nil)
+		t.root, t.h = t.root.pushHead(t.h, t.head)
 		t.head = nil
 	}
 
 	return t
 }
-
-//func (t RRBTree[V]) prepend(value V) RRBTree[V] {
-//
-//	t.head = slice.PushFront(t.head, newRefValue[V](value))
-//	//t.head = append(t.head, newRefValue[V](value))
-//	t.size++
-//
-//	if len(t.head) == maxBranches {
-//		// make a new branch
-//
-//		if t.root == nil {
-//			t.root = createLeaf(t.head)
-//			t.head = nil
-//			return t
-//		}
-//
-//		m, isNewBranch := pushHead(t.root, t.h, t.head)
-//
-//		if isNewBranch {
-//			t.h++
-//
-//			var sizes []int
-//			if !t.root.isBalancedNode() || !m.isBalancedNode() || m.treeSize != cumulativeSumTable[t.h][0] {
-//				sizes = []int{m.treeSize, t.root.treeSize + m.treeSize}
-//			}
-//
-//			t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, m, t.root)
-//
-//		} else {
-//			t.root = m
-//
-//		}
-//
-//		t.head = nil
-//	}
-//
-//	return t
-//}
-
-func popFromLeaf[V any](leaf *node[V]) (m *node[V], value *refValue[V], tail []*refValue[V]) {
-
-	tail, value = slice.Pop(leaf.values)
-
-	if len(tail) < maxBranches {
-		return nil, value, tail
-	}
-
-	m = createLeaf(tail)
-
-	return m, value, nil
-}
-
-func removeLastChildOnNode[V any](n *node[V]) *node[V] {
-	if n == nil || len(n.children) == 1 {
-		return nil
-	}
-
-	m := n.shallowClone()
-	idx := len(m.children) - 1
-	m.treeSize -= m.children[idx].treeSize
-	m.children, _ = slice.Pop(m.children)
-	m.sizes, _ = slice.Pop(m.sizes)
-
-	return m
-}
-
-func popBack[V any](n *node[V], h int) (m *node[V], value *refValue[V], tail []*refValue[V]) {
-	if h == 0 {
-		return popFromLeaf(n)
-	}
-
-	var child *node[V]
-	child, value, tail = popBack(n.children[len(n.children)-1], h-1)
-
-	if child == nil {
-		m = removeLastChildOnNode(n)
-		return m, value, tail
-	}
-
-	return setLastChildOnNode(n, child), value, tail
-}
-
-//func greaterOrEqual[V any](root *node[V], h int, index int) (head []*refValue[V], right *node[V]) {
-//	if h == 0 {
-//		head = slice.Copy(root.values[index:])
-//
-//		if len(head) < maxBranches {
-//			return
-//		} else if len(head) > maxBranches {
-//			idx := len(head) - maxBranches
-//			return head[:idx], createLeaf(head[idx:])
-//		}
-//
-//		return nil, createLeaf(head)
-//	}
-//
-//	//nodes[h]
-//	var slot int
-//	var child *node[V]
-//
-//	slot, index = navigate(root, h, index)
-//
-//	head, child = greaterOrEqual(root.children[slot], h-1, index)
-//
-//	right = root.shallowClone()
-//
-//	if child == nil {
-//		if slot == len(right.children)-1 {
-//			return head, nil
-//		}
-//
-//		right.children = slice.Slice(right.children, slot+1, len(right.children))
-//
-//		if !right.isBalancedNode() {
-//
-//			diff := root.sizes[slot]
-//			right.sizes = slice.Slice(right.sizes, slot+1, len(right.sizes))
-//			right.sizes[len(right.sizes)-1] = right.treeSize
-//			right.treeSize -= diff
-//
-//			for i := 0; i < len(right.sizes); i++ {
-//				right.sizes[i] -= diff
-//			}
-//
-//		} else {
-//			diff := cumulativeSumTable[h][slot]
-//			right.treeSize -= diff
-//		}
-//
-//		return head, right
-//
-//	}
-//
-//	if slot == 0 {
-//		return head, setFirstChildOnNode(right, child)
-//	}
-//
-//	right.children = slice.Slice(right.children, slot, len(right.children))
-//	right.children[0] = child
-//
-//	if !right.isBalancedNode() {
-//		offset := child.treeSize - root.sizes[slot]
-//		right.sizes = slice.Slice(right.sizes, slot, len(right.sizes))
-//		for i := 0; i < len(right.sizes); i++ {
-//			right.sizes[i] += offset
-//		}
-//		right.treeSize = right.sizes[len(right.sizes)-1]
-//
-//	} else {
-//
-//		if child.treeSize != cumulativeSumTable[h][0] {
-//
-//			slotSize := cumulativeSumTable[h][slot]
-//			right.sizes = slice.Copy(cumulativeSumTable[h][slot : len(right.sizes)+slot])
-//			offset := child.treeSize - slotSize
-//
-//			for i := 0; i < len(right.sizes); i++ {
-//				right.sizes[i] += offset
-//			}
-//
-//			right.treeSize = cumulativeSumTable[h][slot]
-//
-//		}
-//
-//	}
-//	return head, right
-//
-//}
-//
-//func lessOrEqual[V any](root *node[V], h int, index int) (left *node[V], tail []*refValue[V]) {
-//	if h == 0 {
-//
-//		// consider to implement a case where we don't need to duplicate the slice whe it doesn't change the underlying array
-//		if index == root.treeSize-1 {
-//			return root, nil
-//		}
-//
-//		tail = slice.Copy(root.values[:index+1])
-//		if len(tail) < maxBranches {
-//			return
-//		} else if len(tail) > maxBranches {
-//			return createLeaf(tail[:maxBranches]), tail[maxBranches:]
-//		}
-//
-//		return createLeaf(tail), nil
-//
-//	}
-//
-//	//nodes[h]
-//	var slot int
-//	var child *node[V]
-//
-//	slot, index = navigate(root, h, index)
-//
-//	child, tail = lessOrEqual(root.children[slot], h-1, index)
-//
-//	left = root.shallowClone()
-//
-//	if child == nil {
-//		if slot == 0 {
-//			return nil, tail
-//		}
-//
-//		left.children = slice.Slice(left.children, 0, slot)
-//
-//		if !left.isBalancedNode() {
-//			left.sizes = slice.Slice(left.sizes, 0, slot)
-//			left.treeSize = left.sizes[slot-1]
-//		} else {
-//			left.treeSize = cumulativeSumTable[h][slot-1]
-//		}
-//
-//		return left, tail
-//
-//	}
-//
-//	if slot == len(left.children)-1 {
-//		return setLastChildOnNode(left, child), tail
-//	}
-//
-//	left.children = slice.Slice(left.children, 0, slot+1)
-//	left.children[slot] = child
-//
-//	if !left.isBalancedNode() {
-//		left.sizes = slice.Slice(left.sizes, 0, slot+1)
-//		left.treeSize = left.sizes[slot]
-//	} else {
-//		left.treeSize = cumulativeSumTable[h][slot]
-//	}
-//	return left, tail
-//
-//}
 
 func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
 	start := 0 + len(t.head)
@@ -1275,61 +1368,6 @@ func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
 		return t
 	}
 }
-
-//func (t RRBTree[V]) slice(i, j int) RRBTree[V] {
-//	start := 0 + len(t.head)
-//	end := t.size - len(t.tail)
-//
-//	//fmt.Println("start , end , i , j", start, end, i, j)
-//
-//	// [0 : head ) - [start : end) - [tail : size)
-//
-//	// fmt.Println(t.size, "[0, ", len(t.head), ")", " [", start, " , ", end, ") [", end, t.size, ")", "-->", i)
-//	switch {
-//	case i > j || i < 0 || j > t.size+1:
-//		panic("Index out of bounds")
-//	case i >= end: // look into tail
-//		t.tail = slice.Slice(t.tail, i-end, j-end)
-//		t.size = len(t.tail)
-//		t.head = nil
-//		t.root = nil
-//		return t
-//	case j <= start: // look into head
-//		t.head = slice.Slice(t.head, i, j)
-//		t.size = len(t.head)
-//		t.tail = nil
-//		t.root = nil
-//		return t
-//	case i <= start && j >= end:
-//		t.head = slice.Slice(t.head, i, start)
-//		t.tail = slice.Slice(t.tail, 0, j-end)
-//		t.size = j - i
-//		return t
-//	case i == j:
-//		return RRBTree[V]{}
-//	default: // look into root
-//		t.size = j - i
-//
-//		if i <= start {
-//			t.head = slice.Slice(t.head, i, start)
-//			t.root, t.tail = lessOrEqual(t.root, t.h, j-start-1)
-//			t.root, t.h = shrink(t.root, t.h)
-//			return t
-//		} else if j >= end {
-//			t.tail = slice.Slice(t.tail, 0, j-end)
-//			t.head, t.root = greaterOrEqual(t.root, t.h, i-start)
-//			t.root, t.h = shrink(t.root, t.h)
-//			return t
-//		}
-//
-//		t.root, t.tail = lessOrEqual(t.root, t.h, j-start-1)
-//		t.root, t.h = shrink(t.root, t.h)
-//		t.head, t.root = greaterOrEqual(t.root, t.h, i-start)
-//		t.root, t.h = shrink(t.root, t.h)
-//		return t
-//
-//	}
-//}
 
 func findPosition(sizes []int, idx int) int {
 	i := 0
@@ -1479,64 +1517,7 @@ func mergeLeaf[V any](left node[V], right node[V]) (mergedRoot *node[V]) {
 	return
 }
 
-//func (t RRBTree[V]) concatenate(other RRBTree[V]) (rrb RRBTree[V]) {
-//
-//	if other.root == nil {
-//
-//		tail := make([]*refValue[V], len(t.tail)+len(other.head)+len(other.tail))
-//		copy(tail, t.tail)
-//		copy(tail[len(t.tail):], other.head)
-//		copy(tail[len(t.tail)+len(other.head):], other.tail)
-//
-//		t.tail = tail
-//
-//		if len(t.tail) > maxBranches {
-//			tail = t.tail[:maxBranches]
-//			t.tail = t.tail[maxBranches:]
-//
-//			m, isNewBranch := pushTail(t.root, t.h, tail)
-//
-//			if isNewBranch {
-//
-//				t.h++
-//
-//				var sizes []int
-//				if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
-//					sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
-//				}
-//
-//				t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
-//
-//			} else {
-//				t.root = m
-//			}
-//		}
-//
-//		t.size += other.size
-//		return
-//	}
-//
-//	m, isNewBranch := pushTail(t.root, t.h, t.tail)
-//	if isNewBranch {
-//
-//		t.h++
-//
-//		var sizes []int
-//		if !t.root.isBalancedNode() || !m.isBalancedNode() || t.root.treeSize != cumulativeSumTable[t.h][0] {
-//			sizes = []int{t.root.treeSize, t.root.treeSize + m.treeSize}
-//		}
-//
-//		t.root = createInternalNode[V](t.root.treeSize+m.treeSize, sizes, t.root, m)
-//
-//	} else {
-//		t.root = m
-//	}
-//
-//	t.tail = nil
-//	return
-//}
-
-func navigate[V any](node *node[V], h, position int) (idx, nextPos int) {
+func navigate[V any](node *node[V], h height, position int) (idx, nextPos int) {
 
 	if node.isBalancedNode() {
 		idx = (position >> shiftTable[h]) & maskTable[0]
@@ -1616,7 +1597,26 @@ func (t RRBTree[V]) Len() int {
 }
 
 func (t RRBTree[V]) Append(value V) RRBTree[V] {
-	return t.push(value)
+
+	t.tail = slice.Push(t.tail, newRefValue[V](value))
+	t.size++
+
+	if len(t.tail) == maxBranches {
+		// make a new branch
+		if t.root == nil {
+			//t.cow = &copyOnWriteContext[V]{}
+			t.root = (*copyOnWriteContext[V])(nil).createLeaf(t.tail)
+			t.tail = nil
+			return t
+		}
+
+		//fmt.Println("before pushItems: ", t.root.treeSize, t.root.sizes, t.root.children, debugId)
+		t.root, t.h = t.root.pushItems(nil, t.tail)
+		//fmt.Println("after pushItems: ", t.root.treeSize, t.root.sizes, t.root.children)
+		t.tail = nil
+	}
+
+	return t
 }
 
 func (t RRBTree[V]) Prepend(value V) RRBTree[V] {
