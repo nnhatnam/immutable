@@ -49,8 +49,8 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h height, dump bool) bool 
 				return len(n.values), false
 			}
 
-			if len(n.values) < minBranches {
-				t.Fatalf("Path: [%v] - Expected leaf's children to be at least %v for non-last branch, got %v", path+" -> leaf ", minBranches, len(n.values))
+			if len(n.values) < maxBranches {
+				t.Fatalf("Path: [%v] - Expected leaf's children to be at least %v for non-last branch, got %v", path+" -> leaf ", maxBranches, len(n.values))
 				return len(n.values), false
 			}
 

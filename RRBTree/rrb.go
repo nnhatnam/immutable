@@ -1033,12 +1033,6 @@ func (n *node[V]) walkFirst(h int) []*node[V] {
 	return nodes
 }
 
-func newNode[V any]() *node[V] {
-	return &node[V]{
-		//children: make([]*node[V], 0, branchFactor),
-	}
-}
-
 type RRBTree[V any] struct {
 	// The root node of the tree.
 	root *node[V]
@@ -1130,38 +1124,6 @@ func (t RRBTree[V]) walkFirst() []*node[V] {
 	return nodes
 }
 
-func createLeaf[V any](values []*refValue[V]) *node[V] {
-	return &node[V]{
-		treeSize: len(values),
-		values:   values,
-	}
-}
-
-func createInternalNode[V any](treeSize int, sizes []int, children ...*node[V]) *node[V] {
-	return &node[V]{
-		treeSize: treeSize,
-		sizes:    sizes,
-		children: children,
-	}
-}
-
-func setLastChildOnNode[V any](n *node[V], child *node[V]) *node[V] {
-
-	m := n.shallowClone()
-
-	idx := len(n.children) - 1
-
-	m.treeSize += child.treeSize - m.children[idx].treeSize
-	m.children = slice.Set(m.children, idx, child)
-
-	if !m.isBalancedNode() {
-		m.sizes = slice.Set(m.sizes, idx, m.treeSize)
-	}
-
-	return m
-
-}
-
 func walkLastBranch[V any](n node[V], h int, nodes []*node[V]) {
 	nodes[h] = &n
 	if h != 0 {
@@ -1201,94 +1163,6 @@ func (t RRBTree[V]) push(value V) RRBTree[V] {
 	}
 
 	return t
-
-}
-
-func prependChildToPartialNode[V any](n *node[V], h int, child *node[V]) *node[V] {
-
-	m := n.shallowClone()
-	if m.isBalancedNode() {
-		m.children = slice.PushFront(m.children, child)
-		m.treeSize += child.treeSize
-
-		if !child.isBalancedNode() || child.treeSize != cumulativeSumTable[h][0] {
-			// child has "invariant violation"
-
-			idx := len(m.children) - 1
-
-			m.sizes = slice.PushFront(cumulativeSumTable[h][:idx], child.treeSize)
-
-			for i := 1; i < idx; i++ {
-				m.sizes[i] += child.treeSize
-			}
-
-			m.sizes[idx] = m.treeSize
-		}
-		return m
-	}
-
-	// unbalanced node
-	m.children = slice.PushFront(m.children, child)
-	m.treeSize += child.treeSize
-
-	idx := len(m.children) - 1
-	m.sizes = slice.PushFront(m.sizes, child.treeSize)
-	for i := 1; i < idx; i++ {
-		m.sizes[i] += child.treeSize
-	}
-	m.sizes[idx] = m.treeSize
-
-	return m
-
-}
-
-func setFirstChildOnNode[V any](n *node[V], child *node[V]) *node[V] {
-
-	m := n.shallowClone()
-
-	//idx := 0
-
-	m.treeSize += child.treeSize - m.children[0].treeSize
-	m.children = slice.Set(m.children, 0, child)
-
-	if !m.isBalancedNode() {
-		diff := child.treeSize - m.sizes[0]
-		m.sizes = slice.Set(m.sizes, 0, child.treeSize)
-		for i := 1; i < len(m.sizes); i++ {
-			m.sizes[i] += diff
-		}
-	}
-
-	return m
-
-}
-
-func pushHead[V any](n *node[V], h int, head []*refValue[V]) (m *node[V], isNewBranch bool) {
-
-	if h == 0 {
-		return createLeaf(head), true
-	}
-
-	var child *node[V]
-
-	child, isNewBranch = pushHead(n.children[0], h-1, head)
-
-	if len(n.children) == maxBranches && isNewBranch {
-		var sizes []int
-
-		if !child.isBalanced(h - 1) {
-			sizes = []int{child.treeSize}
-		}
-
-		return createInternalNode(child.treeSize, sizes, child), true
-
-	}
-
-	if isNewBranch {
-		return prependChildToPartialNode(n, h, child), false
-	}
-
-	return setFirstChildOnNode(n, child), false
 
 }
 
