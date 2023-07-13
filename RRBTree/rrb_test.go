@@ -2,6 +2,7 @@ package RRBTree
 
 import (
 	"fmt"
+	"github.com/nnhatnam/immutable/slice"
 	"golang.org/x/exp/slices"
 	"math/rand"
 	"testing"
@@ -49,7 +50,7 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h height, dump bool) bool 
 				return len(n.values), false
 			}
 
-			if len(n.values) < maxBranches {
+			if len(n.values) < minBranching {
 				t.Fatalf("Path: [%v] - Expected leaf's children to be at least %v for non-last branch, got %v", path+" -> leaf ", maxBranches, len(n.values))
 				return len(n.values), false
 			}
@@ -59,6 +60,11 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h height, dump bool) bool 
 		}
 
 		dumpObj(fmt.Sprintf("Path: [%v] (treeSize : %v - sizes: %v)", path, n.treeSize, n.sizes), dump)
+
+		if !isLastBranch && len(n.children) < minBranching {
+			t.Fatalf("Path: [%v] - Expected node's children to be at least %v for non-last branch, got %v", path, minBranching, len(n.children))
+			return n.treeSize, false
+		}
 
 		cumulativeSize := 0
 		for i, child := range n.children {
@@ -78,7 +84,7 @@ func verifyTree[V any](t *testing.T, rrb *RRBTree[V], h height, dump bool) bool 
 			cummulativeCalc := n.sizes
 
 			if n.isBalancedNode() {
-				cummulativeCalc = cumulativeSumTable[h][:len(n.children)]
+				cummulativeCalc = slice.Copy(cumulativeSumTable[h][:len(n.children)])
 				cummulativeCalc[len(n.children)-1] = n.treeSize
 			}
 
@@ -212,7 +218,7 @@ func TestSimpleRRBTree(t *testing.T) {
 
 		history := make([]RRBTree[int], 0)
 
-		nums := 1 << 15
+		nums := 1 << 16
 		//nums := 1088
 		for i := 0; i < nums; i++ {
 
@@ -222,7 +228,7 @@ func TestSimpleRRBTree(t *testing.T) {
 			rrb = rrb.Append(i)
 
 			// uncomment to debug
-			//verifyTree(t, &rrb, rrb.h, false)
+			//verifyTree(t, &rrb, rrb.h, true)
 
 		}
 
