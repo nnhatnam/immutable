@@ -249,6 +249,7 @@ func (n *node[V]) removeChild(index int, h height) {
 
 }
 
+// child can't be nil
 func (n *node[V]) insertChild(index int, h height, child *node[V]) {
 
 	isParentBalanced := n.isBalancedNode()
@@ -258,12 +259,13 @@ func (n *node[V]) insertChild(index int, h height, child *node[V]) {
 		n.children.insertAt(index, child)
 		n.treeSize += child.treeSize
 
-		if len(n.children) <= minBranching {
-			return
+		if len(n.children) > minBranching {
+			n.sizes = make([]int, len(n.children)-1, len(n.children))
+			copy(n.sizes, cumulativeSumTable[h][:])
+			n.sizes = append(n.sizes, n.treeSize)
 		}
-		n.sizes = make([]int, len(n.children))
-		copy(n.sizes, cumulativeSumTable[h][:])
-		n.sizes = append(n.sizes, n.treeSize)
+
+		return
 	}
 
 	if isParentBalanced && !isChildBalanced {
@@ -340,44 +342,45 @@ func (n *node[V]) mutFor(cow *copyOnWriteContext[V], flag mutableFlag) *node[V] 
 	}
 }
 
-type cloneType int
-
-const (
-	cloneWithOneExtraCap cloneType = iota
-	cloneForPrepend
-)
-
-func (n *node[V]) mutableForWithCustomAllocs(cow *copyOnWriteContext[V], typ cloneType) *node[V] {
-
-	m := cow.newNode()
-
-	switch typ {
-	case cloneWithOneExtraCap:
-		m.treeSize = n.treeSize
-
-		if len(n.sizes) != 0 {
-			m.sizes = make([]int, len(n.sizes), len(n.sizes)+1)
-			copy(m.sizes, n.sizes)
-		}
-
-		m.children = make([]*node[V], len(n.children), len(n.children)+1)
-		copy(m.children, n.children)
-	case cloneForPrepend:
-
-		m.treeSize = n.treeSize
-		if n.isRelaxedNode() {
-			m.sizes = make([]int, len(n.sizes)+1)
-			copy(m.sizes[1:], n.sizes)
-		}
-		m.children = make([]*node[V], len(n.children)+1)
-		copy(m.children[1:], n.children)
-	default:
-		panic("unknown clone action")
-	}
-
-	return m
-
-}
+//
+//type cloneType int
+//
+//const (
+//	cloneWithOneExtraCap cloneType = iota
+//	cloneForPrepend
+//)
+//
+//func (n *node[V]) mutableForWithCustomAllocs(cow *copyOnWriteContext[V], typ cloneType) *node[V] {
+//
+//	m := cow.newNode()
+//
+//	switch typ {
+//	case cloneWithOneExtraCap:
+//		m.treeSize = n.treeSize
+//
+//		if len(n.sizes) != 0 {
+//			m.sizes = make([]int, len(n.sizes), len(n.sizes)+1)
+//			copy(m.sizes, n.sizes)
+//		}
+//
+//		m.children = make([]*node[V], len(n.children), len(n.children)+1)
+//		copy(m.children, n.children)
+//	case cloneForPrepend:
+//
+//		m.treeSize = n.treeSize
+//		if n.isRelaxedNode() {
+//			m.sizes = make([]int, len(n.sizes)+1)
+//			copy(m.sizes[1:], n.sizes)
+//		}
+//		m.children = make([]*node[V], len(n.children)+1)
+//		copy(m.children[1:], n.children)
+//	default:
+//		panic("unknown clone action")
+//	}
+//
+//	return m
+//
+//}
 
 func (n *node[V]) mutableChild(i int) *node[V] {
 	c := n.children[i].mutableFor(n.cow)
@@ -479,12 +482,12 @@ func (n *node[V]) setChild(h height, index int, child *node[V]) {
 func (n *node[V]) readCumulativeSize(h height, index int) int {
 
 	switch {
+	case index < 0: // this must be on top because index can be -1
+		return 0
 	case n.isRelaxedNode():
 		return n.sizes[index]
 	case index == len(n.children)-1:
 		return n.treeSize
-	case index < 0:
-		return 0
 	default:
 		return cumulativeSumTable[h][index]
 	}
@@ -788,8 +791,8 @@ func (n *node[V]) maybeSplitChild(i int) bool {
 		at := maxBranching / 2
 		next := child.split(at)
 		n.children.insertAt(i+1, next)
-		n.sizes.insertAt(i+1, n.sizes[at])
-		n.sizes[i] -= at
+		n.sizes.insertAt(i+1, child.treeSize+next.treeSize)
+		n.sizes[i] -= child.treeSize
 
 		return true
 	}
@@ -817,10 +820,13 @@ func (n *node[V]) pushFrontItemsFor(cow *copyOnWriteContext[V], isRoot bool, ite
 	child, childHeight := n.children[0].pushFrontItemsFor(cow, false, items)
 
 	if childHeight == 0 {
+
 		m = n.mutFor(cow, mPREPEND)
 		m.insertChild(0, 1, child)
+
 	} else {
 		m = n.mutFor(cow, mDUPLICATE)
+
 		m.replaceChild(0, childHeight+1, child)
 		m.maybeSplitChild(0)
 	}
@@ -976,9 +982,7 @@ func (n *node[V]) pushHead(h height, head []*refValue[V]) (*node[V], height) {
 }
 
 func (n *node[V]) pushItemsFor(cow *copyOnWriteContext[V], isRoot bool, items []*refValue[V]) (*node[V], branchType, height) {
-	//if debugId == 1087 {
-	//	fmt.Println("pushItemsFor", isRoot, items)
-	//}
+
 	if len(n.children) == 0 {
 		// we are in leaf node
 		leaf := cow.createLeaf(items)
@@ -999,19 +1003,9 @@ func (n *node[V]) pushItemsFor(cow *copyOnWriteContext[V], isRoot bool, items []
 
 	pHeight := childHeight + 1
 
-	//if debugId == 1087 {
-	//	fmt.Println("received child", bType, childHeight, pHeight, child)
-	//}
-
 	if bType == oldBranch {
 		m := n.mutFor(cow, mDUPLICATE)
 		m.replaceChild(slot, pHeight, child)
-		//offset := child.treeSize - slotTreeSize
-		//m.treeSize += offset
-		//if m.isRelaxedNode() {
-		//	m.sizes[slot] = m.treeSize
-		//}
-		//m.children[slot] = child
 		return m, oldBranch, pHeight
 	}
 
@@ -1786,10 +1780,12 @@ func (t RRBTree[V]) Prepend(value V) RRBTree[V] {
 			return t
 		}
 
+		//if debugId == 3071 {
+		//	fmt.Println("debugId : ", debugId)
+		//	fmt.Println("before pushFrontItemsFor: ", t.root.treeSize, t.root.sizes, t.root.children)
+		//}
+
 		t.root, t.h = t.root.pushFrontItemsFor(nil, true, t.head)
-		//
-		//t.root = t.root.mutableFor(nil)
-		//t.root, t.h = t.root.pushHead(t.h, t.head)
 		t.head = nil
 	}
 

@@ -407,8 +407,11 @@ func TestSimpleRRBTree(t *testing.T) {
 
 		history := make([]RRBTree[int], 0)
 
-		nums := 1 << 15
+		nums := 1 << 16
+		//nums := 3072
 		for i := 0; i < nums; i++ {
+			debugId = i
+			//fmt.Println("prepend ", i)
 			history = append(history, rrb)
 			rrb = rrb.Prepend(nums - i - 1)
 			//verifyTree(t, &rrb, rrb.h, false)
